@@ -1,3 +1,4 @@
+import os
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,6 +67,7 @@ class OutputConfig:
     figures_dir: str = "outputs/figures"
     tables_dir: str = "outputs/tables"
     reports_dir: str = "outputs/reports"
+    run_id: str = ""  # set to timestamp like "run_20260310_153600"
 
 
 @dataclass
@@ -87,13 +89,24 @@ class PipelineConfig:
         path.mkdir(parents=True, exist_ok=True)
         return path / filename
 
+    def _run_base(self) -> Path:
+        """Base output directory: outputs/run_TIMESTAMP/ or outputs/."""
+        if self.output.run_id:
+            return self.project_root / "outputs" / self.output.run_id
+        return self.project_root / "outputs"
+
     def figures_path(self, stage: str) -> Path:
-        path = self.project_root / self.output.figures_dir / stage
+        path = self._run_base() / "figures" / stage
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def tables_path(self) -> Path:
-        path = self.project_root / self.output.tables_dir
+        path = self._run_base() / "tables"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def reports_path(self) -> Path:
+        path = self._run_base() / "reports"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -123,5 +136,10 @@ def load_config(config_path: Optional[str] = None, project_root: Optional[str] =
 
     if project_root:
         config.project_root = Path(project_root)
+
+    # Pick up timestamped run ID from environment (set by run_all_stages.py)
+    run_id = os.environ.get("PIPELINE_RUN_ID", "")
+    if run_id:
+        config.output.run_id = run_id
 
     return config

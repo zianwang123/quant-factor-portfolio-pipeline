@@ -3,12 +3,18 @@
 Applies Fama-MacBeth, IC analysis, and LASSO to identify factors
 with genuine predictive power, then selects an optimal factor combination
 using greedy forward selection with decorrelation constraints.
+
+Loads cached factors and QSpreads from Stage 1 to avoid redundant computation.
 """
 import faulthandler
 faulthandler.enable()
 import gc
 import sys
 from pathlib import Path
+
+# Disable tqdm monitor thread
+import tqdm as _tqdm
+_tqdm.tqdm.monitor_interval = 0
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -19,11 +25,11 @@ from src.data.loader import DataPanel
 from src.factors.registry import build_all_factors
 from src.factors.validation import QuintileSorter
 from src.selection.selector import FactorSelector
-from src.selection.information_coefficient import compute_ic_series, ic_decay_analysis
-from src.visualization.factor_plots import plot_ic_time_series
 
 
-def _flush():
+def _flush(msg=""):
+    if msg:
+        print(msg)
     sys.stdout.flush()
     sys.stderr.flush()
 
@@ -32,40 +38,69 @@ def run_stage_2(config_path: str = None, factors: dict = None, qspreads: dict = 
     config = load_config(config_path, project_root=str(PROJECT_ROOT))
     tables_path = config.tables_path()
     fig_path = config.figures_path("stage_2")
+    cache_dir = PROJECT_ROOT / "data" / "processed" / "cache"
 
     print("=" * 60)
     print("STAGE 2: Factor Selection Engine")
-    print("=" * 60); _flush()
+    print("=" * 60)
+    _flush()
 
-    # Load data
-    print("\n[1/4] Loading data..."); _flush()
-    panel = DataPanel(config)
-    returns = panel.get_returns()
-    is_sp500 = panel.get_sp500_membership()
+    # ── Load data ──
+    _flush("\n[1/4] Loading data...")
 
-    if factors is None:
-        print("  Building factors from scratch (excluding Beta)..."); _flush()
+    # Try to load cached factors from Stage 1
+    if factors is None and (cache_dir / "factor_HL1M.pkl").exists():
+        _flush("  Loading cached factors from Stage 1...")
+        factors = {}
+        for pkl in sorted(cache_dir.glob("factor_*.pkl")):
+            fname = pkl.stem.replace("factor_", "")
+            factors[fname] = pd.read_pickle(str(pkl))
+        _flush(f"  Loaded {len(factors)} cached factors")
+    elif factors is None:
+        _flush("  No cache found, building factors from scratch...")
+        panel = DataPanel(config)
         factors = build_all_factors(panel, config, include_extended=True, exclude=["Beta"])
+        panel._raw = None
+        gc.collect()
+        _flush(f"  Built {len(factors)} factors")
 
-    # Free raw data to reduce memory pressure
-    panel._raw = None
-    gc.collect()
-    print("  Raw data freed"); _flush()
+    # Load cached returns and SP500 membership
+    if (cache_dir / "returns.pkl").exists():
+        _flush("  Loading cached returns...")
+        returns = pd.read_pickle(str(cache_dir / "returns.pkl"))
+        is_sp500 = pd.read_pickle(str(cache_dir / "is_sp500.pkl"))
+    else:
+        _flush("  Loading returns from raw data...")
+        panel = DataPanel(config)
+        returns = panel.get_returns()
+        is_sp500 = panel.get_sp500_membership()
+        panel._raw = None
+        gc.collect()
 
-    # Build QSpreads if not provided
+    _flush(f"  Returns: {returns.shape}, Factors: {len(factors)}")
+
+    # Load QSpreads from Stage 1 CSV if available
     if qspreads is None:
-        print("  Running quintile sorts for QSpreads..."); _flush()
-        sorter = QuintileSorter(n_bins=config.factors.quintile_bins)
-        sort_results = sorter.sort_all_factors(factors, returns, is_sp500)
-        qspreads = {name: res["qspread"] for name, res in sort_results.items()}
+        qspreads_csv = tables_path / "factor_qspreads.csv"
+        if qspreads_csv.exists():
+            _flush("  Loading QSpreads from Stage 1 CSV...")
+            qs_df = pd.read_csv(qspreads_csv, index_col=0)
+            qs_df.index = pd.PeriodIndex(qs_df.index, freq="M")
+            qspreads = {col: qs_df[col] for col in qs_df.columns}
+            _flush(f"  Loaded {len(qspreads)} QSpread series")
+        else:
+            _flush("  Running quintile sorts for QSpreads...")
+            sorter = QuintileSorter(n_bins=config.factors.quintile_bins)
+            sort_results = sorter.sort_all_factors(factors, returns, is_sp500)
+            qspreads = {name: res["qspread"] for name, res in sort_results.items()}
 
-    # Run selection
-    print("\n[2/4] Running factor selection methods..."); _flush()
+    # ── Run selection ──
+    _flush("\n[2/4] Running factor selection methods...")
     selector = FactorSelector(config)
     results = selector.run_all(returns, factors, is_sp500, qspreads=qspreads)
 
-    # *** INTERMEDIATE DUMP: save selection results immediately ***
-    print("\n[3/4] Saving results..."); _flush()
+    # ── Save results ──
+    _flush("\n[3/4] Saving results...")
     results["fama_macbeth"].to_csv(tables_path / "fama_macbeth_results.csv")
     results["ic_analysis"].to_csv(tables_path / "ic_analysis.csv")
     results["consensus_scores"].to_frame("Score").to_csv(tables_path / "factor_consensus_ranking.csv")
@@ -76,37 +111,40 @@ def run_stage_2(config_path: str = None, factors: dict = None, qspreads: dict = 
         "score": [results["consensus_scores"].get(f, 0) for f in selected],
     })
     selected_df.to_csv(tables_path / "selected_factor_combination.csv", index=False)
-    print("  CSVs saved"); _flush()
+    _flush("  CSVs saved")
 
-    # Report results
+    # ── Report ──
     print("\n--- Fama-MacBeth Results ---")
-    print(results["fama_macbeth"].round(4)); _flush()
+    print(results["fama_macbeth"].round(4))
+    _flush()
 
     print("\n--- IC Analysis ---")
-    print(results["ic_analysis"].round(4)); _flush()
+    print(results["ic_analysis"].round(4))
+    _flush()
 
     print("\n--- LASSO Selection ---")
     lasso = results["lasso"]
     print(f"  Selected factors: {lasso['selected_factors']}")
-    print(f"  Alpha: {lasso.get('alpha', 'N/A')}"); _flush()
+    print(f"  Alpha: {lasso.get('alpha', 'N/A')}")
+    _flush()
 
     print("\n--- Consensus Ranking ---")
-    print(results["consensus_scores"]); _flush()
+    print(results["consensus_scores"])
+    _flush()
 
     print(f"\n--- Selected Factor Combination ---")
-    print(f"  Factors: {selected}"); _flush()
+    print(f"  Factors: {selected}")
+    _flush()
 
-    # QSpread correlation among selected
     if len(selected) > 1:
         sel_spreads = pd.DataFrame({k: v for k, v in qspreads.items() if k in selected})
         if not sel_spreads.empty:
             print("\n  Pairwise QSpread correlations among selected:")
-            print(sel_spreads.corr().round(3)); _flush()
+            print(sel_spreads.corr().round(3))
+            _flush()
 
-    # Plots skipped in main run to avoid segfaults
-    print("\n[4/4] Plots skipped (run plot_all.py separately if needed)"); _flush()
-
-    print(f"\nStage 2 complete. Results saved to {tables_path} and {fig_path}"); _flush()
+    print("\n[4/4] Plots skipped (run plot_all.py separately if needed)")
+    _flush(f"\nStage 2 complete. Results saved to {tables_path} and {fig_path}")
     return results
 
 

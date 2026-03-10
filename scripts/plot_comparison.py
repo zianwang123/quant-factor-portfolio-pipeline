@@ -1,4 +1,5 @@
 """Generate the key benchmark comparison plot from saved OOS returns."""
+import os
 import sys
 from pathlib import Path
 
@@ -9,23 +10,46 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Load OOS returns
-tables = PROJECT_ROOT / "outputs" / "tables"
-fig_path = PROJECT_ROOT / "outputs" / "figures" / "stage_3"
+# Use timestamped run folder if set: outputs/run_TIMESTAMP/tables, figures
+run_id = os.environ.get("PIPELINE_RUN_ID", "")
+if run_id:
+    run_base = PROJECT_ROOT / "outputs" / run_id
+else:
+    run_base = PROJECT_ROOT / "outputs"
+tables = run_base / "tables"
+fig_path = run_base / "figures" / "stage_3"
 fig_path.mkdir(parents=True, exist_ok=True)
 
 oos = pd.read_csv(tables / "oos_returns_all.csv", index_col=0)
 oos.index = pd.PeriodIndex(oos.index, freq="M")
 
-# Pick key series for comparison
+# Create "Market + Alpha" strategy: S&P 500 return + our factor alpha
+# This shows what a long-only investor would get by overlaying our factor signals
+oos["Our: Market + Factor Alpha"] = oos["S&P 500"] + oos["Our: IC-Weighted"]
+
+# Pick key series: all "Our:" variants + key benchmarks
 key_names = [
     col for col in oos.columns
-    if any(k in col for k in ["IC-Weighted", "S&P 500", "Hedge Fund Index (EW)",
-                               "Mutual Fund (EW)", "Smart Beta (EW)"])
+    if col.startswith("Our:") or any(k in col for k in [
+        "S&P 500", "Hedge Fund Index (EW)", "Mutual Fund (EW)", "Smart Beta (EW)",
+    ])
 ]
 print(f"Plotting: {key_names}")
 
-COLORS = ["#2563eb", "#dc2626", "#16a34a", "#f59e0b", "#8b5cf6", "#06b6d4"]
+# Colors: blues for our portfolios, other colors for benchmarks
+OUR_COLORS = {"Equal Weight": "#2563eb", "IC-Weighted": "#0ea5e9", "MVO": "#7c3aed",
+              "Max Sharpe": "#db2777", "Risk Parity": "#059669", "Market + Factor Alpha": "#0d9488"}
+BENCH_COLORS = {"S&P 500": "#dc2626", "Mutual Fund (EW)": "#f59e0b",
+                "Smart Beta (EW)": "#84cc16", "Hedge Fund Index (EW)": "#f97316"}
+
+def _get_color(name):
+    for k, c in OUR_COLORS.items():
+        if k in name:
+            return c
+    for k, c in BENCH_COLORS.items():
+        if k in name:
+            return c
+    return "#94a3b8"
 
 # ── Chart 1: Cumulative Returns Comparison ──
 fig = make_subplots(
@@ -40,8 +64,8 @@ for i, name in enumerate(key_names):
     r = oos[name].dropna()
     cum = (1 + r).cumprod()
     dates = r.index.to_timestamp()
-    color = COLORS[i % len(COLORS)]
-    lw = 3 if "Our" in name else 1.8
+    color = _get_color(name)
+    lw = 2.5 if "Our" in name else 1.5
 
     fig.add_trace(go.Scatter(
         x=dates, y=cum.values,

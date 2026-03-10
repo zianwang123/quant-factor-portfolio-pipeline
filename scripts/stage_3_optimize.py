@@ -16,7 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import numpy as np
 import pandas as pd
 from src.config import load_config
-from src.data.loader import DataPanel, load_fama_french, load_sp500_returns
+from src.data.loader import DataPanel, load_sp500_returns
 from src.factors.registry import build_all_factors
 from src.factors.validation import QuintileSorter
 from src.portfolio.covariance import ledoit_wolf_shrinkage
@@ -135,6 +135,11 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     print(f"  Selected factors: {selected_factors}")
     print(f"  QSpread data: {sel_qspreads.shape[0]} months, {sel_qspreads.shape[1]} factors")
 
+    # INTERMEDIATE DUMP: save selected QSpreads
+    tables_path = config.tables_path()
+    sel_qspreads.to_csv(tables_path / "selected_qspreads.csv")
+    print(f"  [DUMP] selected_qspreads.csv saved"); _flush()
+
     # ── Part B: Optimize factor allocation ───────────────────────────────
     print("\n[2/5] Optimizing factor allocation...")
 
@@ -173,21 +178,21 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     else:
         our_portfolios["IC-Weighted"] = ew.copy()
 
-    # 3. MVO
+    # 3. MVO (hedge fund style: allow shorting, gross leverage up to 3x)
     try:
-        # Allow short since factors can be long-short
         mvo = mean_variance_optimize(
             mu_is, sigma_is, risk_aversion=config.optimization.risk_aversion,
-            long_only=False, min_weight=-0.5, max_weight=1.0,
+            long_only=False, min_weight=-2.0, max_weight=2.0,
+            gross_leverage=3.0,
         )
         our_portfolios["MVO"] = mvo
         print(f"  MVO: done")
     except Exception as e:
         print(f"  MVO failed: {e}")
 
-    # 4. Max Sharpe (long-only to avoid extreme leverage)
+    # 4. Max Sharpe (allow shorting, same as MVO)
     try:
-        ms = max_sharpe_portfolio(mu_is, sigma_is, long_only=True)
+        ms = max_sharpe_portfolio(mu_is, sigma_is, long_only=False)
         our_portfolios["Max Sharpe"] = ms
         print(f"  Max Sharpe: done")
     except Exception as e:
@@ -206,10 +211,19 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     print(f"\n  Factor Allocation Weights:")
     print(weight_df.round(4))
 
+    # INTERMEDIATE DUMP: save weights
+    weight_df.to_csv(tables_path / "factor_allocation_weights.csv")
+    print(f"  [DUMP] factor_allocation_weights.csv saved"); _flush()
+
     # Compute portfolio return series
     our_returns = {}
     for pname, weights in our_portfolios.items():
         our_returns[pname] = sel_qspreads @ weights
+
+    # INTERMEDIATE DUMP: save our portfolio returns
+    our_ret_df = pd.DataFrame(our_returns)
+    our_ret_df.to_csv(tables_path / "our_portfolio_returns.csv")
+    print(f"  [DUMP] our_portfolio_returns.csv saved"); _flush()
 
     # ── Part C: Load benchmark data ──────────────────────────────────────
     print("\n[3/5] Loading benchmark data...")
@@ -219,8 +233,20 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     benchmarks = {}
     benchmarks["S&P 500"] = sp500_df["ret_sp500"]  # already in decimal
 
-    ff_data = load_fama_french(config)
-    for sheet_name, raw_df in ff_data.items():
+    # Load benchmark data from pre-converted CSVs (avoids openpyxl segfault)
+    processed_dir = config.project_root / config.data.processed_dir
+    benchmark_csvs = {
+        "fama_french_factor": "Fama-French Factor",
+        "mutual_fund": "Mutual Fund",
+        "smart_beta": "Smart Beta",
+        "hedge_fund_index": "Hedge Fund Index",
+    }
+    for csv_name, sheet_name in benchmark_csvs.items():
+        csv_path = processed_dir / f"{csv_name}.csv"
+        if not csv_path.exists():
+            _flush(f"  WARNING: {csv_path} not found, skipping")
+            continue
+        raw_df = pd.read_csv(csv_path)
         if "Date" not in raw_df.columns:
             continue
         df = _parse_ff_sheet(raw_df)
@@ -228,7 +254,6 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
         df = df.dropna(how="all")
 
         if "fama" in sheet_name.lower() or "ff" in sheet_name.lower():
-            # Use market factor as benchmark
             if "mktrf" in df.columns:
                 benchmarks["FF Market (Mkt-RF)"] = df["mktrf"]
             if "smb" in df.columns:
@@ -238,16 +263,19 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
             if "umd" in df.columns:
                 benchmarks["FF Momentum (UMD)"] = df["umd"]
         else:
-            # Use equal-weight portfolio of funds as benchmark
             ew_ret = df.mean(axis=1)
             benchmarks[f"{sheet_name} (EW)"] = ew_ret
 
-            # Also include best individual fund (highest Sharpe)
             sharpes = df.mean() / df.std()
             best_fund = sharpes.idxmax()
             benchmarks[f"{sheet_name} Best ({best_fund})"] = df[best_fund]
 
     print(f"  Benchmarks loaded: {list(benchmarks.keys())}")
+
+    # INTERMEDIATE DUMP: save raw benchmark returns
+    bench_df = pd.DataFrame(benchmarks)
+    bench_df.to_csv(tables_path / "benchmark_raw_returns.csv")
+    print(f"  [DUMP] benchmark_raw_returns.csv saved"); _flush()
 
     # ── Part D: Performance comparison ───────────────────────────────────
     print("\n[4/5] Computing performance comparison...")
@@ -302,6 +330,16 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     print("\n  Out-of-Sample Performance Comparison:")
     print(comp_df.round(4))
 
+    # INTERMEDIATE DUMP: save comparison and OOS returns NOW (before stat tests)
+    comp_df.to_csv(tables_path / "benchmark_comparison.csv")
+    oos_returns_early = {}
+    for name, ret in all_series.items():
+        r = ret.loc[common_start:common_end].dropna()
+        if len(r) > 0:
+            oos_returns_early[name] = r
+    pd.DataFrame(oos_returns_early).to_csv(tables_path / "oos_returns_all.csv")
+    print(f"  [DUMP] benchmark_comparison.csv + oos_returns_all.csv saved"); _flush()
+
     # ── Statistical tests: our best vs each benchmark ────────────────────
     print("\n  Statistical Tests (Sharpe Ratio Equality):")
     # Find our best strategy
@@ -325,13 +363,9 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
                 except Exception as e:
                     print(f"    {best_our_name} vs {bname}: test failed ({e})")
 
-    # ── Part E: Save results and plots ───────────────────────────────────
-    print("\n[5/5] Saving results and generating plots...")
-    tables_path = config.tables_path()
+    # ── Part E: Save remaining results ──────────────────────────────────
+    print("\n[5/5] Saving final results...")
     fig_path = config.figures_path("stage_3")
-
-    comp_df.to_csv(tables_path / "benchmark_comparison.csv")
-    weight_df.to_csv(tables_path / "factor_allocation_weights.csv")
 
     # In-sample performance for our factor portfolios
     is_comparison = {}
@@ -344,16 +378,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
         }
     is_df = pd.DataFrame(is_comparison).T
     is_df.to_csv(tables_path / "factor_portfolio_in_sample.csv")
-
-    # Save all OOS return series for plotting separately
-    oos_returns = {}
-    for name, ret in all_series.items():
-        r = ret.loc[common_start:common_end].dropna()
-        if len(r) > 0:
-            oos_returns[name] = r
-    oos_df = pd.DataFrame(oos_returns)
-    oos_df.to_csv(tables_path / "oos_returns_all.csv")
-    print(f"  OOS return series saved for plotting"); _flush()
+    print(f"  [DUMP] factor_portfolio_in_sample.csv saved"); _flush()
 
     print(f"\nStage 3 complete. Results saved to {tables_path} and {fig_path}")
     return {

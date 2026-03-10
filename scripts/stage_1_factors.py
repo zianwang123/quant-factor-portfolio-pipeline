@@ -3,14 +3,18 @@
 Builds all 20 equity factors from Compustat/CRSP data, validates against
 Capital IQ benchmarks, and produces comprehensive factor analytics.
 
-Dumps intermediate results to CSV after each major step so progress
-is never lost to intermittent segfaults.
+Split into sub-stages with intermediate saves to survive segfaults.
 """
 import faulthandler
 faulthandler.enable()
 import sys
 import gc
+import pickle
 from pathlib import Path
+
+# Disable tqdm monitor thread (causes segfaults via GIL contention on Windows)
+import tqdm as _tqdm
+_tqdm.tqdm.monitor_interval = 0
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -24,15 +28,11 @@ from src.factors.validation import QuintileSorter
 from src.analytics.performance import (
     compute_descriptive_stats, t_test_factor_spreads, compute_turnover_stats,
 )
-from src.visualization.factor_plots import (
-    plot_qspread_vs_benchmark, plot_long_short_legs,
-    plot_quintile_monotonicity, plot_cumulative_qspread_vs_market,
-    plot_factor_correlation_heatmap, plot_ic_time_series,
-)
-from src.selection.information_coefficient import compute_ic_series, ic_summary
 
 
-def _flush():
+def _flush(msg=""):
+    if msg:
+        print(msg)
     sys.stdout.flush()
     sys.stderr.flush()
 
@@ -41,42 +41,61 @@ def run_stage_1(config_path: str = None):
     config = load_config(config_path, project_root=str(PROJECT_ROOT))
     tables_path = config.tables_path()
     fig_path = config.figures_path("stage_1")
+    cache_dir = PROJECT_ROOT / "data" / "processed" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
     print("STAGE 1: Factor Construction & Validation")
-    print("=" * 60); _flush()
+    print("=" * 60)
+    _flush()
 
     # ── Step 1: Load data ──
-    print("\n[1/6] Loading data..."); _flush()
+    _flush("\n[1/6] Loading data...")
     panel = DataPanel(config)
     returns = panel.get_returns()
     is_sp500 = panel.get_sp500_membership()
     market_excess = panel.get_market_excess()
     capital_iq = panel.capital_iq
-    print(f"  Data loaded: returns {returns.shape}"); _flush()
+    _flush(f"  Data loaded: returns {returns.shape}")
+
+    # Save returns and is_sp500 for potential sub-process use
+    returns.to_pickle(str(cache_dir / "returns.pkl"))
+    is_sp500.to_pickle(str(cache_dir / "is_sp500.pkl"))
+    _flush("  Cached returns and SP500 membership")
 
     # ── Step 2: Build factors ──
-    print("\n[2/6] Constructing factors..."); _flush()
+    _flush("\n[2/6] Constructing factors...")
     factors = build_all_factors(panel, config, include_extended=True, exclude=["Beta"])
-    print(f"  Built {len(factors)} factors"); _flush()
+    _flush(f"  Built {len(factors)} factors")
 
-    # Free raw CSV data — factors are already computed
+    # Save each factor to disk
+    for fname, fdf in factors.items():
+        fdf.to_pickle(str(cache_dir / f"factor_{fname}.pkl"))
+    _flush(f"  Cached {len(factors)} factor DataFrames to disk")
+
+    # Free raw CSV data
     panel._raw = None
     gc.collect()
-    print("  Raw data freed"); _flush()
+    _flush("  Raw data freed")
 
-    # ── Step 3: Quintile sorts ──
-    print("\n[3/6] Running quintile sorts..."); _flush()
+    # ── Step 3: Quintile sorts (one factor at a time, with gc) ──
+    _flush("\n[3/6] Running quintile sorts...")
     sorter = QuintileSorter(n_bins=config.factors.quintile_bins)
-    sort_results = sorter.sort_all_factors(factors, returns, is_sp500)
+
+    sort_results = {}
+    for name in list(factors.keys()):
+        _flush(f"  Sorting {name}...")
+        result = sorter.sort_single_factor(factors[name], returns, is_sp500)
+        sort_results[name] = result
+        gc.collect()
 
     # *** INTERMEDIATE DUMP: save QSpreads immediately ***
     qspreads = pd.DataFrame({name: res["qspread"] for name, res in sort_results.items()})
     qspreads.to_csv(tables_path / "factor_qspreads.csv")
-    print(f"  QSpreads saved: {qspreads.shape}"); _flush()
+    _flush(f"  QSpreads saved: {qspreads.shape}")
 
     # ── Step 4: Validate against Capital IQ ──
-    print("\n[4/6] Validating against Capital IQ benchmarks..."); _flush()
+    _flush("\n[4/6] Validating against Capital IQ benchmarks...")
     validation = validate_all_factors(
         factors, {n: r["qspread"] for n, r in sort_results.items()},
         capital_iq, config.dates.validation_start, config.dates.end,
@@ -86,9 +105,8 @@ def run_stage_1(config_path: str = None):
     _flush()
 
     # ── Step 5: Analytics ──
-    print("\n[5/6] Computing analytics..."); _flush()
+    _flush("\n[5/6] Computing analytics...")
 
-    # Descriptive statistics (in percentage points for readability)
     qspreads_pct = qspreads * 100
     sp500_excess_pct = market_excess * 100
     qspreads_pct["SP500"] = sp500_excess_pct.reindex(qspreads_pct.index)
@@ -111,13 +129,10 @@ def run_stage_1(config_path: str = None):
     print(turnover_stats.round(4))
     _flush()
 
-    # IC Analysis skipped here — done in Stage 2 to avoid pandas segfaults
-    print("\nIC analysis: deferred to Stage 2"); _flush()
+    print("\nIC analysis: deferred to Stage 2")
+    print("\n[6/6] Plots skipped (run plot_all.py separately if needed)")
 
-    # Plots skipped in main run to avoid segfaults — run plot_all.py separately
-    print("\n[6/6] Plots skipped (run plot_all.py separately if needed)"); _flush()
-
-    print(f"\nStage 1 complete. Results saved to {tables_path} and {fig_path}"); _flush()
+    _flush(f"\nStage 1 complete. Results saved to {tables_path} and {fig_path}")
     return {
         "factors": factors,
         "sort_results": sort_results,

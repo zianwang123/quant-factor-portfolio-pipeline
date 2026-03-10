@@ -1,0 +1,49 @@
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  compustat_file: "compustat_crsp.csv"
+  sp500_file: "sp500_returns.csv"
+  capital_iq_file: "capital_iq_benchmark.csv"
+  fama_french_file: "fama_french_factors.xlsx"
+
+dates:
+  start: "1970-01"
+  end: "2019-12"
+  validation_start: "1987-01"
+  in_sample_end: "2012-12"
+  out_of_sample_start: "2013-01"
+
+factors:
+  beta_window: 48
+  momentum_skip: 2
+  momentum_window: 11
+  vol_window: 13
+  quintile_bins: 5
+  winsorize_pct: 0.01
+
+selection:
+  fama_macbeth:
+    newey_west_lags: 6
+  ic:
+    min_ic: 0.02
+    min_ic_ir: 0.5
+  lasso:
+    cv_folds: 5
+    alphas: 100
+
+optimization:
+  risk_aversion: 10
+  max_leverage: 1.5
+  rebalance_freq: "quarterly"
+  transaction_cost_bps: 10
+  shrinkage: "ledoit_wolf"
+
+black_litterman:
+  tau: 0.5
+  delta: 10
+  view_confidence: "ic_based"
+
+output:
+  figures_dir: "outputs/figures"
+  tables_dir: "outputs/tables"
+  reports_dir: "outputs/reports"

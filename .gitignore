@@ -1,0 +1,12 @@
+data/raw/
+data/processed/
+outputs/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.pkl
+*.parquet
+.env
+*.egg-info/
+dist/
+build/

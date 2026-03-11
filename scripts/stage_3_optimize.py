@@ -29,6 +29,7 @@ from src.analytics.risk import (
     historical_var, cvar, cornish_fisher_var, drawdown_stats,
 )
 from src.analytics.statistical_tests import sharpe_ratio_test
+from src.black_litterman.model import black_litterman_posterior
 from src.visualization.portfolio_plots import plot_efficient_frontier
 
 
@@ -202,6 +203,43 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
         print(f"  Risk Parity: done")
     except Exception as e:
         print(f"  Risk Parity failed: {e}")
+
+    # ── BL variants: same optimizers, BL posterior return estimates ──
+    tau = config.black_litterman.tau
+    delta = config.black_litterman.delta
+    try:
+        w_eq = np.ones(n_factors) / n_factors
+        P = np.eye(n_factors)
+        Q = mu_is  # views = in-sample mean returns
+        omega_diag = np.array([tau * sigma_is[i, i] for i in range(n_factors)])
+        Omega = np.diag(omega_diag)
+
+        bl = black_litterman_posterior(delta, sigma_is, w_eq, tau, P, Q, Omega)
+        mu_bl = bl["mu_posterior"]
+        print(f"  BL posterior computed (tau={tau}, delta={delta})")
+
+        # 6. MVO + BL
+        try:
+            mvo_bl = mean_variance_optimize(
+                mu_bl, sigma_is, risk_aversion=delta,
+                long_only=False, min_weight=-0.5, max_weight=1.0,
+                gross_leverage=2.0,
+            )
+            our_portfolios["MVO + BL"] = mvo_bl
+            print(f"  MVO + BL: done")
+        except Exception as e:
+            print(f"  MVO + BL failed: {e}")
+
+        # 7. Max Sharpe + BL
+        try:
+            ms_bl = max_sharpe_portfolio(mu_bl, sigma_is, long_only=False, gross_leverage=3.0)
+            our_portfolios["Max Sharpe + BL"] = ms_bl
+            print(f"  Max Sharpe + BL: done")
+        except Exception as e:
+            print(f"  Max Sharpe + BL failed: {e}")
+
+    except Exception as e:
+        print(f"  BL posterior failed: {e}")
 
     # Print weights
     weight_df = pd.DataFrame(our_portfolios, index=selected_factors)

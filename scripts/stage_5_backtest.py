@@ -4,12 +4,17 @@ Simulates realistic portfolio management:
 - Rolling lookback window to re-estimate factor covariance and expected returns
 - Rebalances quarterly (configurable)
 - Deducts transaction costs (10bps) on every weight change
-- Compares all portfolio variants (with and without BL)
+- Compares all portfolio variants with and without BL return estimation
+
+Each return-dependent optimizer (IC-Weighted, MVO, Max Sharpe) is run twice:
+once with raw lookback returns, once with BL posterior returns. Equal Weight
+and Risk Parity don't use returns, so they have no BL variant.
 
 Produces:
 - Gross vs net-of-cost Sharpe comparison table
 - Cumulative return plots (gross and net)
 - Rolling Sharpe comparison
+- BL vs non-BL side-by-side for each optimizer
 - Weight evolution over time
 - Turnover analysis
 """
@@ -52,6 +57,25 @@ def _sharpe(r):
     return r.mean() / r.std() * np.sqrt(12) if r.std() > 0 else np.nan
 
 
+# ── BL posterior helper ──
+
+def _bl_posterior_mu(mu, sigma, tau=0.05, delta=50):
+    """Compute Black-Litterman posterior returns.
+
+    Prior: equal-weight equilibrium. Views: lookback mean returns.
+    Returns the BL posterior expected returns vector.
+    """
+    n = len(mu)
+    w_eq = np.ones(n) / n
+    P = np.eye(n)
+    Q = mu  # views = lookback mean returns
+    omega_diag = np.array([tau * sigma[i, i] for i in range(n)])
+    Omega = np.diag(omega_diag)
+
+    bl = black_litterman_posterior(delta, sigma, w_eq, tau, P, Q, Omega)
+    return bl["mu_posterior"]
+
+
 # ── Optimizer functions for RollingBacktest ──
 
 def equal_weight_optimizer(mu, sigma, **kwargs):
@@ -67,6 +91,15 @@ def ic_weighted_optimizer(mu, sigma, **kwargs):
     return w / w.sum()
 
 
+def ic_weighted_bl_optimizer(mu, sigma, **kwargs):
+    """IC-Weighted using BL posterior returns."""
+    try:
+        mu_bl = _bl_posterior_mu(mu, sigma, kwargs.get("tau", 0.05), kwargs.get("delta", 50))
+        return ic_weighted_optimizer(mu_bl, sigma, **kwargs)
+    except Exception:
+        return ic_weighted_optimizer(mu, sigma, **kwargs)
+
+
 def mvo_optimizer(mu, sigma, **kwargs):
     return mean_variance_optimize(
         mu, sigma,
@@ -76,6 +109,20 @@ def mvo_optimizer(mu, sigma, **kwargs):
     )
 
 
+def mvo_bl_optimizer(mu, sigma, **kwargs):
+    """MVO using BL posterior returns with tighter constraints."""
+    try:
+        mu_bl = _bl_posterior_mu(mu, sigma, kwargs.get("tau", 0.05), kwargs.get("delta", 50))
+        return mean_variance_optimize(
+            mu_bl, sigma,
+            risk_aversion=kwargs.get("delta", 50),
+            long_only=False, min_weight=-0.5, max_weight=1.0,
+            gross_leverage=2.0,
+        )
+    except Exception:
+        return mvo_optimizer(mu, sigma, **kwargs)
+
+
 def max_sharpe_optimizer(mu, sigma, **kwargs):
     return max_sharpe_portfolio(
         mu, sigma,
@@ -83,39 +130,20 @@ def max_sharpe_optimizer(mu, sigma, **kwargs):
     )
 
 
-def risk_parity_optimizer(mu, sigma, **kwargs):
-    return risk_parity(sigma)
-
-
-def bl_optimizer(mu, sigma, **kwargs):
-    """Black-Litterman: prior=equal-weight, views=historical means.
-
-    Computes BL posterior returns, then uses constrained MVO to get
-    well-behaved weights. This is the practitioner approach — BL provides
-    better return estimates, MVO provides portfolio constraints.
-    """
-    n = len(mu)
-    w_eq = np.ones(n) / n
-    tau = kwargs.get("tau", 0.05)
-    delta = kwargs.get("delta", 50)
-
-    P = np.eye(n)
-    Q = mu  # views = lookback mean returns
-
-    omega_diag = np.array([tau * sigma[i, i] for i in range(n)])
-    Omega = np.diag(omega_diag)
-
+def max_sharpe_bl_optimizer(mu, sigma, **kwargs):
+    """Max Sharpe using BL posterior returns."""
     try:
-        bl = black_litterman_posterior(delta, sigma, w_eq, tau, P, Q, Omega)
-        # Use constrained MVO with BL posterior returns
-        return mean_variance_optimize(
-            bl["mu_posterior"], sigma,
-            risk_aversion=delta,
-            long_only=False, min_weight=-0.5, max_weight=1.0,
-            gross_leverage=2.0,
+        mu_bl = _bl_posterior_mu(mu, sigma, kwargs.get("tau", 0.05), kwargs.get("delta", 50))
+        return max_sharpe_portfolio(
+            mu_bl, sigma,
+            long_only=False, gross_leverage=3.0,
         )
     except Exception:
-        return w_eq
+        return max_sharpe_optimizer(mu, sigma, **kwargs)
+
+
+def risk_parity_optimizer(mu, sigma, **kwargs):
+    return risk_parity(sigma)
 
 
 def run_stage_5(config_path: str = None):
@@ -165,13 +193,20 @@ def run_stage_5(config_path: str = None):
     _flush(f"  Rebalance: {rebalance_freq}")
     _flush(f"  Transaction cost: {tc_bps} bps")
 
+    bl_kwargs = {"tau": tau, "delta": delta}
+
+    # Define all portfolios: base strategies + BL variants for return-dependent ones
     portfolios = {
+        # Base strategies (no BL)
         "Equal Weight": (equal_weight_optimizer, {}),
         "IC-Weighted": (ic_weighted_optimizer, {}),
         "MVO": (mvo_optimizer, {"risk_aversion": config.optimization.risk_aversion}),
         "Max Sharpe": (max_sharpe_optimizer, {}),
         "Risk Parity": (risk_parity_optimizer, {}),
-        "BL": (bl_optimizer, {"tau": tau, "delta": delta}),
+        # BL variants (same optimizer, BL posterior returns)
+        "IC-Weighted + BL": (ic_weighted_bl_optimizer, bl_kwargs),
+        "MVO + BL": (mvo_bl_optimizer, {**bl_kwargs, "risk_aversion": config.optimization.risk_aversion}),
+        "Max Sharpe + BL": (max_sharpe_bl_optimizer, bl_kwargs),
     }
 
     # Run each backtest: once with costs, once without
@@ -288,16 +323,21 @@ def run_stage_5(config_path: str = None):
     # ── Generate plots ──
     _flush("\n[4/4] Generating plots...")
 
-    # 1. Cumulative returns comparison (net of costs)
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
     COLORS = {
         "Equal Weight": "#2563eb", "IC-Weighted": "#0ea5e9",
         "MVO": "#7c3aed", "Max Sharpe": "#db2777",
-        "Risk Parity": "#059669", "BL": "#f59e0b",
+        "Risk Parity": "#059669",
+        "IC-Weighted + BL": "#0e7490",
+        "MVO + BL": "#a855f7",
+        "Max Sharpe + BL": "#f43f5e",
     }
+    # BL variants use dashed lines
+    BL_VARIANTS = {"IC-Weighted + BL", "MVO + BL", "Max Sharpe + BL"}
 
+    # 1. Cumulative returns comparison (net of costs)
     fig = make_subplots(
         rows=2, cols=1, row_heights=[0.7, 0.3],
         shared_xaxes=True, vertical_spacing=0.06,
@@ -311,12 +351,14 @@ def run_stage_5(config_path: str = None):
         cum = (1 + ret).cumprod()
         dates = ret.index.to_timestamp()
         color = COLORS.get(pname, "#94a3b8")
-        lw = 3 if pname in ("IC-Weighted", "BL") else 1.5
+        is_bl = pname in BL_VARIANTS
+        lw = 2.5 if is_bl else 1.5
+        dash = "dash" if is_bl else "solid"
 
         fig.add_trace(go.Scatter(
             x=dates, y=cum.values,
-            mode="lines", name=f"{pname} (Sharpe:{_sharpe(ret):.2f})",
-            line=dict(color=color, width=lw),
+            mode="lines", name=f"{pname} ({_sharpe(ret):.2f})",
+            line=dict(color=color, width=lw, dash=dash),
             legendgroup=pname,
         ), row=1, col=1)
 
@@ -326,7 +368,7 @@ def run_stage_5(config_path: str = None):
         fig.add_trace(go.Scatter(
             x=dates, y=dd.values,
             mode="lines", name=pname,
-            line=dict(color=color, width=1),
+            line=dict(color=color, width=1, dash=dash),
             fill="tozeroy", opacity=0.4,
             showlegend=False, legendgroup=pname,
         ), row=2, col=1)
@@ -380,29 +422,30 @@ def run_stage_5(config_path: str = None):
         title="Gross vs Net Sharpe Ratio (Rolling Backtest, OOS)",
         xaxis_title="Annualized Sharpe Ratio",
         template="plotly_white",
-        height=500, width=900,
+        height=600, width=900,
         font=dict(size=13),
-        margin=dict(l=150),
+        margin=dict(l=180),
         barmode="group",
     )
 
     fig2.write_html(str(fig_path / "backtest_sharpe_comparison.html"), include_plotlyjs="cdn")
     try:
-        fig2.write_image(str(fig_path / "backtest_sharpe_comparison.png"), width=900, height=500, scale=2)
+        fig2.write_image(str(fig_path / "backtest_sharpe_comparison.png"), width=900, height=600, scale=2)
     except Exception:
         pass
     _flush("  Saved backtest_sharpe_comparison.html")
 
-    # 4. Weight evolution for BL and IC-Weighted
-    for pname in ["BL", "IC-Weighted", "MVO"]:
+    # 4. Weight evolution for key strategies
+    for pname in ["IC-Weighted + BL", "MVO + BL", "Max Sharpe + BL", "IC-Weighted", "MVO"]:
         if pname in results_net and "weights_history" in results_net[pname]:
             wh = results_net[pname]["weights_history"]
             if not wh.empty:
+                safe_name = pname.lower().replace(' ', '_').replace('-', '_').replace('+', 'plus')
                 plot_weight_evolution(
                     wh, top_n=5,
                     title=f"{pname}: Factor Weight Evolution (Rolling)",
                     save_path=fig_path,
-                    filename=f"backtest_weights_{pname.lower().replace(' ', '_').replace('-', '_')}.png",
+                    filename=f"backtest_weights_{safe_name}.png",
                 )
                 _flush(f"  Saved weight evolution for {pname}")
 
@@ -435,102 +478,77 @@ def run_stage_5(config_path: str = None):
         pass
     _flush("  Saved backtest_turnover.html")
 
-    # 6. BL vs Non-BL side-by-side comparison
-    if "BL" in oos_returns_net:
-        _flush("\n  Generating BL vs Non-BL comparison...")
+    # 6. BL vs Non-BL side-by-side comparison (per optimizer)
+    _flush("\n  Generating BL vs Non-BL comparison...")
 
-        # Pair each non-BL strategy with the BL strategy
-        non_bl_names = [n for n in oos_returns_net if n != "BL"]
-        bl_ret = oos_returns_net["BL"]
+    # Pairs: base strategy -> BL variant
+    bl_pairs = [
+        ("IC-Weighted", "IC-Weighted + BL"),
+        ("MVO", "MVO + BL"),
+        ("Max Sharpe", "Max Sharpe + BL"),
+    ]
+    # Filter to pairs that both ran
+    bl_pairs = [(b, bl) for b, bl in bl_pairs if b in oos_returns_net and bl in oos_returns_net]
 
+    if bl_pairs:
+        # Side-by-side cumulative returns for each pair
         fig_bl = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=[
-                "Cumulative Returns: BL vs Non-BL (Net)",
-                "Rolling 24M Sharpe: BL vs Non-BL",
-            ],
-            horizontal_spacing=0.08,
+            rows=1, cols=len(bl_pairs),
+            subplot_titles=[f"{base} vs {base} + BL" for base, _ in bl_pairs],
+            horizontal_spacing=0.06,
         )
 
-        # Left: Cumulative returns
-        cum_bl = (1 + bl_ret).cumprod()
-        dates_bl = bl_ret.index.to_timestamp()
-        fig_bl.add_trace(go.Scatter(
-            x=dates_bl, y=cum_bl.values,
-            mode="lines", name="BL",
-            line=dict(color=COLORS["BL"], width=3),
-            legendgroup="BL",
-        ), row=1, col=1)
+        for col, (base_name, bl_name) in enumerate(bl_pairs, 1):
+            for pname, dash, lw in [(base_name, "solid", 2), (bl_name, "dash", 2.5)]:
+                ret = oos_returns_net[pname]
+                cum = (1 + ret).cumprod()
+                dates = ret.index.to_timestamp()
+                color = COLORS.get(pname, "#94a3b8")
+                fig_bl.add_trace(go.Scatter(
+                    x=dates, y=cum.values,
+                    mode="lines", name=f"{pname} ({_sharpe(ret):.2f})",
+                    line=dict(color=color, width=lw, dash=dash),
+                    showlegend=(col == 1),
+                    legendgroup=pname,
+                ), row=1, col=col)
 
-        for pname in non_bl_names:
-            ret = oos_returns_net[pname]
-            cum = (1 + ret).cumprod()
-            dates = ret.index.to_timestamp()
-            color = COLORS.get(pname, "#94a3b8")
-            fig_bl.add_trace(go.Scatter(
-                x=dates, y=cum.values,
-                mode="lines", name=pname,
-                line=dict(color=color, width=1.5),
-                legendgroup=pname,
-            ), row=1, col=1)
-
-        # Right: Rolling Sharpe
-        window = 24
-        rs_bl = bl_ret.rolling(window).apply(lambda x: x.mean()/x.std()*np.sqrt(12), raw=True)
-        fig_bl.add_trace(go.Scatter(
-            x=dates_bl, y=rs_bl.values,
-            mode="lines", name="BL",
-            line=dict(color=COLORS["BL"], width=3),
-            showlegend=False, legendgroup="BL",
-        ), row=1, col=2)
-
-        for pname in non_bl_names:
-            ret = oos_returns_net[pname]
-            rs = ret.rolling(window).apply(lambda x: x.mean()/x.std()*np.sqrt(12), raw=True)
-            dates = ret.index.to_timestamp()
-            color = COLORS.get(pname, "#94a3b8")
-            fig_bl.add_trace(go.Scatter(
-                x=dates, y=rs.values,
-                mode="lines", name=pname,
-                line=dict(color=color, width=1.5),
-                showlegend=False, legendgroup=pname,
-            ), row=1, col=2)
-
-        fig_bl.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5, row=1, col=2)
+            fig_bl.update_yaxes(title_text="Cumulative Return" if col == 1 else "", row=1, col=col)
 
         fig_bl.update_layout(
             template="plotly_white", font=dict(size=13),
-            height=500, width=1400,
-            title_text="Black-Litterman vs Traditional Portfolios (Rolling Backtest, Net of Costs)",
+            height=450, width=500 * len(bl_pairs),
+            title_text="BL Return Estimation: Impact on Each Optimizer (Net of Costs, OOS)",
             legend=dict(x=0.02, y=0.98),
             hovermode="x unified",
         )
-        fig_bl.update_yaxes(title_text="Cumulative Return", row=1, col=1)
-        fig_bl.update_yaxes(title_text="Rolling 24M Sharpe", row=1, col=2)
 
         fig_bl.write_html(str(fig_path / "bl_vs_nonbl_comparison.html"), include_plotlyjs="cdn")
         try:
-            fig_bl.write_image(str(fig_path / "bl_vs_nonbl_comparison.png"), width=1400, height=500, scale=2)
+            fig_bl.write_image(str(fig_path / "bl_vs_nonbl_comparison.png"),
+                               width=500 * len(bl_pairs), height=450, scale=2)
         except Exception:
             pass
         _flush("  Saved bl_vs_nonbl_comparison.html")
 
-        # BL vs non-BL summary table
+        # BL improvement summary table
         bl_summary = []
-        bl_sharpe = _sharpe(bl_ret)
-        for pname in non_bl_names:
-            ret = oos_returns_net[pname]
-            s = _sharpe(ret)
+        for base_name, bl_name in bl_pairs:
+            base_ret = oos_returns_net[base_name]
+            bl_ret = oos_returns_net[bl_name]
+            base_s = _sharpe(base_ret)
+            bl_s = _sharpe(bl_ret)
             bl_summary.append({
-                "Portfolio": pname,
-                "Non-BL Sharpe": s,
-                "BL Sharpe": bl_sharpe,
-                "BL Improvement": bl_sharpe - s,
-                "BL Better?": "Yes" if bl_sharpe > s else "No",
+                "Optimizer": base_name,
+                "Base Sharpe": base_s,
+                "BL Sharpe": bl_s,
+                "Improvement": bl_s - base_s,
+                "BL Better?": "Yes" if bl_s > base_s else "No",
+                "Base Turnover": results_net[base_name].get("turnover", pd.Series(dtype=float)).mean(),
+                "BL Turnover": results_net[bl_name].get("turnover", pd.Series(dtype=float)).mean(),
             })
-        bl_summary_df = pd.DataFrame(bl_summary).set_index("Portfolio")
+        bl_summary_df = pd.DataFrame(bl_summary).set_index("Optimizer")
         bl_summary_df.to_csv(tables_path / "bl_vs_nonbl_summary.csv")
-        _flush("\n  BL vs Non-BL Summary:")
+        _flush("\n  BL vs Non-BL Summary (same optimizer, different return estimates):")
         print(bl_summary_df.round(4))
         _flush("  Saved bl_vs_nonbl_summary.csv")
 

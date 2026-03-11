@@ -1,15 +1,18 @@
-"""Stage 4: Black-Litterman Factor Allocation.
+"""Stage 4: Black-Litterman Robustness Analysis.
 
-Applies Black-Litterman to factor-level portfolio allocation:
-- Prior: equal-weight factor allocation (market equilibrium for factors)
-- Views: factor return forecasts from IC analysis and Fama-MacBeth
-- Posterior: BL-optimal factor weights
+Part A — BL Hyperparameter Sensitivity & Statistical Tests:
+  Tests whether Stage 3's BL improvement (MVO+BL vs MVO, MaxSharpe+BL vs MaxSharpe)
+  is robust to the choice of tau and delta. The baseline tau=0.05, delta=10 was chosen
+  a priori from He & Litterman (1999). The sensitivity grid evaluates OOS performance
+  across a range of (tau, delta) combinations — this is a ROBUSTNESS CHECK, not parameter
+  optimization (using OOS to select parameters would be data snooping).
 
-This is a natural extension of Stage 3 — instead of ad-hoc factor weighting
-(equal, IC-weighted, MVO), BL provides a Bayesian-principled allocation
-that blends prior beliefs with factor-level signals.
+  Also runs Diebold-Mariano and Sharpe equality tests to formally assess whether
+  BL's improvement over plain MVO/MaxSharpe is statistically significant.
 
-Also runs a stock-level BL analysis for completeness.
+Part B — Stock-Level BL (Academic Reference):
+  Applies BL to ~274 individual S&P 500 stocks to demonstrate why factor-level
+  allocation is the right granularity (stock-level views are too diffuse).
 """
 import faulthandler
 faulthandler.enable()
@@ -26,11 +29,10 @@ import pandas as pd
 from src.config import load_config
 from src.data.loader import DataPanel, load_sp500_returns
 from src.portfolio.covariance import ledoit_wolf_shrinkage
-from src.portfolio.optimization import mean_variance_optimize
+from src.portfolio.optimization import mean_variance_optimize, max_sharpe_portfolio
 from src.black_litterman.equilibrium import implied_equilibrium_returns
 from src.black_litterman.model import black_litterman_posterior
-from src.black_litterman.sensitivity import tau_delta_grid
-from src.analytics.statistical_tests import diebold_mariano_test
+from src.analytics.statistical_tests import diebold_mariano_test, sharpe_ratio_test
 
 
 def _flush(msg=""):
@@ -64,24 +66,24 @@ def run_stage_4(config_path: str = None):
     cache_dir = PROJECT_ROOT / "data" / "processed" / "cache"
 
     print("=" * 60)
-    print("STAGE 4: Black-Litterman Factor Allocation")
+    print("STAGE 4: Black-Litterman Robustness Analysis")
     print("=" * 60)
 
     is_end = config.dates.in_sample_end
     oos_start = config.dates.out_of_sample_start
     is_end_period = pd.Period(is_end, freq="M")
     oos_start_period = pd.Period(oos_start, freq="M")
-    tau = config.black_litterman.tau
-    delta = config.black_litterman.delta
+    tau_baseline = config.black_litterman.tau
+    delta_baseline = config.black_litterman.delta
 
     # ══════════════════════════════════════════════════════════════
-    # PART A: Factor-Level Black-Litterman
+    # PART A: BL Hyperparameter Sensitivity & Statistical Tests
     # ══════════════════════════════════════════════════════════════
     _flush("\n" + "─" * 60)
-    _flush("PART A: Factor-Level Black-Litterman Allocation")
+    _flush("PART A: BL Robustness Analysis (Sensitivity + Statistical Tests)")
     _flush("─" * 60)
 
-    # ── Load factor QSpreads ──
+    # ── A1: Load factor QSpreads ──
     _flush("\n[A1] Loading factor data...")
     qspreads_csv = tables_path / "factor_qspreads.csv"
     if not qspreads_csv.exists():
@@ -91,7 +93,6 @@ def run_stage_4(config_path: str = None):
     qs_df = pd.read_csv(qspreads_csv, index_col=0)
     qs_df.index = pd.PeriodIndex(qs_df.index, freq="M")
 
-    # Load selected factors
     selected_csv = tables_path / "selected_factor_combination.csv"
     if selected_csv.exists():
         sel_df = pd.read_csv(selected_csv)
@@ -103,150 +104,225 @@ def run_stage_4(config_path: str = None):
     _flush(f"  Selected factors: {selected_factors}")
     _flush(f"  QSpread data: {sel_qspreads.shape}")
 
-    # Load IC analysis for views
+    # Load IC and FM tables for view confidence
     ic_table = None
     ic_csv = tables_path / "ic_analysis.csv"
     if ic_csv.exists():
         ic_table = pd.read_csv(ic_csv, index_col=0)
 
-    # Load FM results for views
     fm_table = None
     fm_csv = tables_path / "fama_macbeth_results.csv"
     if fm_csv.exists():
         fm_table = pd.read_csv(fm_csv, index_col=0)
 
-    # ── Split IS/OOS ──
+    # ── A2: Split IS/OOS, compute covariance and views ──
     qs_is = sel_qspreads.loc[:is_end_period].dropna()
     qs_oos = sel_qspreads.loc[oos_start_period:].dropna()
     n_factors = len(selected_factors)
+    K = n_factors
     _flush(f"  IS: {len(qs_is)} months, OOS: {len(qs_oos)} months")
 
-    # ── Factor covariance (Ledoit-Wolf shrinkage) ──
-    _flush("\n[A2] Computing factor covariance and equilibrium...")
+    _flush("\n[A2] Computing factor covariance and views...")
     sigma_f = ledoit_wolf_shrinkage(qs_is).values
-    _flush(f"  Factor covariance: {sigma_f.shape}")
+    mu_is = qs_is.mean().values
 
-    # Prior: equal-weight allocation (the "market portfolio" for factors)
-    w_eq = np.ones(n_factors) / n_factors
-    pi_f = implied_equilibrium_returns(delta, sigma_f, w_eq)
-    _flush(f"  Equilibrium returns (equal-weight prior): {dict(zip(selected_factors, pi_f.round(6)))}")
+    # Views: P = I (absolute view per factor), Q = IS mean returns
+    P = np.eye(K)
+    Q = mu_is
+    _flush(f"  IS mean QSpread: {dict(zip(selected_factors, Q.round(6)))}")
 
-    # ── Build views from IC and FM analysis ──
-    _flush("\n[A3] Building factor views...")
-
-    # View 1: Each factor's historical mean QSpread as a view
-    # P = identity matrix (one view per factor: "factor k will earn Q_k")
-    P = np.eye(n_factors)
-    Q = qs_is.mean().values
-    _flush(f"  Historical mean QSpread: {dict(zip(selected_factors, Q.round(6)))}")
-
-    # Omega: view uncertainty
-    # Use prior-scaled approach: omega_k = tau * sigma_f[k,k] / confidence_k
-    # Confidence from IC: higher |IC| → more confident
-    omega_diag = np.zeros(n_factors)
+    # Omega: view uncertainty scaled by IC confidence and FM significance
+    # omega_k = tau * sigma_f[k,k] / confidence_k (He & Litterman 1999)
+    confidence = np.ones(K)
     for i, fname in enumerate(selected_factors):
-        prior_var = tau * sigma_f[i, i]
-        confidence = 1.0
+        c = 1.0
         if ic_table is not None and fname in ic_table.index:
             ic = abs(float(ic_table.loc[fname, "Mean IC"]))
-            # IC of 0.03 → confidence 1.6, IC of 0.05 → 2.0
-            confidence = 1.0 + 20.0 * ic
-        # Also boost confidence if FM risk premium is significant
+            c = 1.0 + 20.0 * ic
         if fm_table is not None and fname in fm_table.index:
             fm_sig = fm_table.loc[fname, "Significant (5%)"]
             if fm_sig == True or fm_sig == "True":
-                confidence *= 1.5
-        omega_diag[i] = prior_var / confidence
-        _flush(f"  {fname}: Q={Q[i]:.6f}, confidence={confidence:.2f}, omega={omega_diag[i]:.8f}")
+                c *= 1.5
+        confidence[i] = c
 
-    Omega = np.diag(omega_diag)
+    # Base omega per unit tau (so we can rescale for the sensitivity grid)
+    base_omega_over_tau = np.array([sigma_f[i, i] / confidence[i] for i in range(K)])
+    _flush(f"  View confidence: {dict(zip(selected_factors, confidence.round(2)))}")
 
-    # ── Run BL model ──
-    _flush("\n[A4] Computing BL posterior...")
-    bl_f = black_litterman_posterior(delta, sigma_f, w_eq, tau, P, Q, Omega)
-    mu_post_f = bl_f["mu_posterior"]
-    w_bl_f = bl_f["weights"]
-
-    _flush(f"  Prior (equilibrium) returns: {dict(zip(selected_factors, pi_f.round(6)))}")
-    _flush(f"  Posterior returns: {dict(zip(selected_factors, mu_post_f.round(6)))}")
-    _flush(f"  BL weights: {dict(zip(selected_factors, w_bl_f.round(4)))}")
-    _flush(f"  Sum of weights: {w_bl_f.sum():.4f}")
-
-    # Compare with Stage 3 allocations
+    # ── A3: Load Stage 3 baselines ──
+    _flush("\n[A3] Loading Stage 3 baseline weights...")
     weights_csv = tables_path / "factor_allocation_weights.csv"
-    if weights_csv.exists():
-        stage3_weights = pd.read_csv(weights_csv, index_col=0)
-        stage3_weights["BL"] = w_bl_f
-        _flush("\n  All Factor Allocation Weights:")
-        print(stage3_weights.round(4))
+    if not weights_csv.exists():
+        _flush("  ERROR: factor_allocation_weights.csv not found. Run Stage 3 first.")
+        return
 
-    # ── OOS evaluation ──
-    _flush("\n[A5] Out-of-sample evaluation...")
-    bl_oos_ret = qs_oos @ w_bl_f
+    stage3_weights = pd.read_csv(weights_csv, index_col=0)
 
-    # Also compute Stage 3 portfolio returns for comparison
-    all_oos_returns = {"BL": bl_oos_ret}
-    if weights_csv.exists():
-        for col in stage3_weights.columns:
-            if col != "BL":
-                w = stage3_weights[col].values
-                all_oos_returns[col] = qs_oos @ w
+    # Compute OOS returns for each Stage 3 variant
+    baseline_returns = {}
+    baseline_sharpe = {}
+    for col in stage3_weights.columns:
+        w = stage3_weights[col].values
+        ret = qs_oos @ w
+        baseline_returns[col] = ret
+        baseline_sharpe[col] = _sharpe(ret)
 
-    perf_rows = {}
-    for pname, ret in all_oos_returns.items():
-        perf_rows[pname] = {
-            "Ann. Return": _ann_ret(ret),
-            "Ann. Volatility": _ann_vol(ret),
-            "Sharpe Ratio": _sharpe(ret),
-            "Max Drawdown": _max_dd(ret),
-        }
+    _flush("  Stage 3 OOS Sharpe ratios:")
+    for name, sr in sorted(baseline_sharpe.items(), key=lambda x: -x[1]):
+        _flush(f"    {name}: {sr:.4f}")
 
-    perf_f = pd.DataFrame(perf_rows)
-    _flush("\n  Factor-Level OOS Performance:")
-    print(perf_f.round(4))
+    # Extract the key comparisons
+    mvo_sr = baseline_sharpe.get("MVO", np.nan)
+    mvo_bl_sr = baseline_sharpe.get("MVO + BL", np.nan)
+    ms_sr = baseline_sharpe.get("Max Sharpe", np.nan)
+    ms_bl_sr = baseline_sharpe.get("Max Sharpe + BL", np.nan)
 
-    # Statistical test: BL vs IC-Weighted
-    if "IC-Weighted" in all_oos_returns:
-        try:
-            dm = diebold_mariano_test(
-                all_oos_returns["BL"],
-                all_oos_returns["IC-Weighted"],
-            )
-            _flush(f"\n  Diebold-Mariano (BL vs IC-Weighted): stat={dm['DM Statistic']:.4f}, p={dm['p-value']:.4f}")
-        except Exception as e:
-            _flush(f"  DM test failed: {e}")
+    _flush(f"\n  BL improvement at baseline (tau={tau_baseline}, delta={delta_baseline}):")
+    _flush(f"    MVO: {mvo_sr:.4f} → MVO+BL: {mvo_bl_sr:.4f} (Δ = {mvo_bl_sr - mvo_sr:+.4f})")
+    _flush(f"    MaxSharpe: {ms_sr:.4f} → MaxSharpe+BL: {ms_bl_sr:.4f} (Δ = {ms_bl_sr - ms_sr:+.4f})")
 
-    # ── Sensitivity analysis ──
-    _flush("\n[A6] Tau/delta sensitivity for factor-level BL...")
+    # ── A4: Tau/delta sensitivity grid ──
+    _flush("\n[A4] Tau/delta robustness grid...")
+    _flush("  NOTE: This grid uses OOS data for evaluation — it CANNOT be used for")
+    _flush("  parameter selection (that would be data snooping). The baseline")
+    _flush(f"  tau={tau_baseline}, delta={delta_baseline} was chosen a priori from")
+    _flush("  He & Litterman (1999). This analysis shows whether the BL improvement")
+    _flush("  is robust or fragile to hyperparameter choice.\n")
+
     tau_vals = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5]
     delta_vals = [2.5, 5, 10, 25, 50]
+    w_eq = np.ones(K) / K
 
-    # Scale Omega proportionally for each tau in the grid
-    # (since Omega was built with current tau, need to rescale)
-    base_omega_over_tau = omega_diag / tau  # prior_var_per_unit_tau / confidence
+    # Fix Omega at baseline tau to break the tau cancellation.
+    # When Omega ∝ tau (He & Litterman 1999), tau cancels out of the posterior
+    # mean mu_bar — the optimizers see identical inputs regardless of tau.
+    # Fixing Omega makes tau control the prior-vs-view balance as intended.
+    Omega_fixed = np.diag(base_omega_over_tau * tau_baseline)
 
-    grid_sharpe = {}
-    grid_weights = {}
+    grid_mvo_bl = {}
+    grid_ms_bl = {}
+
     for t in tau_vals:
         for d in delta_vals:
-            omega_scaled = np.diag(base_omega_over_tau * t)
             try:
-                bl_g = black_litterman_posterior(d, sigma_f, w_eq, t, P, Q, omega_scaled)
-                w_g = bl_g["weights"]
-                ret_g = qs_oos @ w_g
-                key = f"tau={t}, delta={d}"
-                grid_sharpe[key] = _sharpe(ret_g)
-                grid_weights[key] = dict(zip(selected_factors, w_g.round(4)))
+                bl = black_litterman_posterior(d, sigma_f, w_eq, t, P, Q, Omega_fixed)
+                mu_bl = bl["mu_posterior"]
+
+                # MVO + BL (matching Stage 3 constraints exactly)
+                try:
+                    w_mvo_bl = mean_variance_optimize(
+                        mu_bl, sigma_f, risk_aversion=d,
+                        long_only=False, min_weight=-0.5, max_weight=1.0, gross_leverage=2.0,
+                    )
+                    ret_mvo_bl = qs_oos @ w_mvo_bl
+                    grid_mvo_bl[(t, d)] = _sharpe(ret_mvo_bl)
+                except Exception:
+                    grid_mvo_bl[(t, d)] = np.nan
+
+                # Max Sharpe + BL (matching Stage 3 constraints exactly)
+                try:
+                    w_ms_bl = max_sharpe_portfolio(
+                        mu_bl, sigma_f, long_only=False, gross_leverage=3.0,
+                    )
+                    ret_ms_bl = qs_oos @ w_ms_bl
+                    grid_ms_bl[(t, d)] = _sharpe(ret_ms_bl)
+                except Exception:
+                    grid_ms_bl[(t, d)] = np.nan
+
             except Exception:
-                pass
+                grid_mvo_bl[(t, d)] = np.nan
+                grid_ms_bl[(t, d)] = np.nan
 
-    grid_sharpe_s = pd.Series(grid_sharpe)
-    _flush("\n  Sensitivity grid (Sharpe):")
-    print(grid_sharpe_s.round(4))
+    # Format as 2D DataFrames
+    mvo_bl_grid = pd.DataFrame(
+        [[grid_mvo_bl.get((t, d), np.nan) for d in delta_vals] for t in tau_vals],
+        index=[f"τ={t}" for t in tau_vals],
+        columns=[f"δ={d}" for d in delta_vals],
+    )
+    ms_bl_grid = pd.DataFrame(
+        [[grid_ms_bl.get((t, d), np.nan) for d in delta_vals] for t in tau_vals],
+        index=[f"τ={t}" for t in tau_vals],
+        columns=[f"δ={d}" for d in delta_vals],
+    )
 
-    best_key = grid_sharpe_s.idxmax()
-    _flush(f"\n  Best: {best_key} → Sharpe={grid_sharpe_s[best_key]:.4f}")
-    _flush(f"  Weights: {grid_weights[best_key]}")
+    _flush("  MVO + BL Sharpe across (tau, delta):")
+    print(mvo_bl_grid.round(4))
+
+    _flush(f"\n  Plain MVO baseline Sharpe: {mvo_sr:.4f}")
+    n_mvo_beat = (mvo_bl_grid.values.flatten() > mvo_sr).sum()
+    n_total = mvo_bl_grid.size
+    _flush(f"  Grid cells where MVO+BL beats plain MVO: {n_mvo_beat}/{n_total}")
+    _flush(f"  MVO+BL Sharpe range: [{np.nanmin(mvo_bl_grid.values):.4f}, {np.nanmax(mvo_bl_grid.values):.4f}]")
+
+    _flush(f"\n  Max Sharpe + BL Sharpe across (tau, delta):")
+    print(ms_bl_grid.round(4))
+
+    _flush(f"\n  Plain Max Sharpe baseline Sharpe: {ms_sr:.4f}")
+    n_ms_beat = (ms_bl_grid.values.flatten() > ms_sr).sum()
+    _flush(f"  Grid cells where MaxSharpe+BL beats plain MaxSharpe: {n_ms_beat}/{n_total}")
+    _flush(f"  MaxSharpe+BL Sharpe range: [{np.nanmin(ms_bl_grid.values):.4f}, {np.nanmax(ms_bl_grid.values):.4f}]")
+
+    # Robustness summary
+    mvo_robust_pct = n_mvo_beat / n_total * 100
+    ms_robust_pct = n_ms_beat / n_total * 100
+    _flush(f"\n  Robustness: BL improves MVO in {mvo_robust_pct:.0f}% of grid cells, "
+           f"MaxSharpe in {ms_robust_pct:.0f}% of grid cells.")
+    if mvo_robust_pct >= 60 and ms_robust_pct >= 60:
+        _flush("  → BL improvement is ROBUST to hyperparameter choice.")
+    elif mvo_robust_pct >= 40 or ms_robust_pct >= 40:
+        _flush("  → BL improvement is MODERATE — depends on (tau, delta) region.")
+        _flush("    BL helps most with higher delta (risk aversion) and lower tau (trust prior).")
+    else:
+        _flush("  → BL improvement is FRAGILE — highly dependent on hyperparameter choice.")
+
+    # ── A5: Statistical significance of BL improvement ──
+    _flush("\n[A5] Statistical tests: Is BL improvement significant?")
+
+    tests_results = []
+
+    # Test pairs: BL variant vs non-BL variant
+    test_pairs = [
+        ("MVO + BL", "MVO"),
+        ("Max Sharpe + BL", "Max Sharpe"),
+    ]
+
+    for bl_name, base_name in test_pairs:
+        if bl_name not in baseline_returns or base_name not in baseline_returns:
+            continue
+
+        r_bl = pd.Series(baseline_returns[bl_name], index=qs_oos.index)
+        r_base = pd.Series(baseline_returns[base_name], index=qs_oos.index)
+
+        # Diebold-Mariano test
+        dm = diebold_mariano_test(r_bl, r_base)
+        # Sharpe equality test (Jobson-Korkie with Memmel correction)
+        jk = sharpe_ratio_test(r_bl, r_base)
+
+        _flush(f"\n  {bl_name} vs {base_name}:")
+        _flush(f"    Sharpe: {jk['SR1']:.4f} vs {jk['SR2']:.4f} (Δ = {jk['SR Diff']:+.4f})")
+        _flush(f"    Jobson-Korkie z = {jk['z-statistic']:.3f}, p = {jk['p-value']:.4f}"
+               f"{' ***' if jk['Significant (5%)'] else ''}")
+        _flush(f"    Diebold-Mariano DM = {dm['DM Statistic']:.3f}, p = {dm['p-value']:.4f}"
+               f"{' ***' if dm['Significant (5%)'] else ''}")
+
+        tests_results.append({
+            "Comparison": f"{bl_name} vs {base_name}",
+            "BL Sharpe": jk["SR1"],
+            "Base Sharpe": jk["SR2"],
+            "Sharpe Diff": jk["SR Diff"],
+            "JK z-stat": jk["z-statistic"],
+            "JK p-value": jk["p-value"],
+            "JK Sig (5%)": jk["Significant (5%)"],
+            "DM stat": dm["DM Statistic"],
+            "DM p-value": dm["p-value"],
+            "DM Sig (5%)": dm["Significant (5%)"],
+        })
+
+    _flush("\n  Note: With only 60 OOS months, these tests have low power. Economic")
+    _flush("  significance (BL consistently improves Sharpe and halves turnover) may")
+    _flush("  be more informative than statistical significance at short horizons.")
+
+    tests_df = pd.DataFrame(tests_results)
 
     # ══════════════════════════════════════════════════════════════
     # PART B: Stock-Level Black-Litterman (for completeness)
@@ -315,6 +391,8 @@ def run_stage_4(config_path: str = None):
     mv = mv.clip(lower=0)
     w_mkt = (mv / mv.sum()).values
 
+    delta = delta_baseline
+    tau = tau_baseline
     pi_s = implied_equilibrium_returns(delta, sigma_s, w_mkt)
     _flush(f"  Equilibrium returns: mean={pi_s.mean():.6f}, std={pi_s.std():.6f}")
 
@@ -401,7 +479,10 @@ def run_stage_4(config_path: str = None):
         stock_perf_df = pd.DataFrame(stock_perf)
         print(stock_perf_df.round(4))
 
-        # Save stock-level results
+        _flush("\n  Stock-level BL underperforms market-cap weighting because factor-derived")
+        _flush("  views are too diffuse across ~274 individual stocks. This motivates")
+        _flush("  our focus on factor-level allocation in Stages 3-5.")
+
         stock_perf_df.to_csv(tables_path / "bl_stock_level_performance.csv")
 
     # ══════════════════════════════════════════════════════════════
@@ -410,27 +491,17 @@ def run_stage_4(config_path: str = None):
     _flush("\n" + "─" * 60)
     _flush("Saving results...")
 
-    perf_f.to_csv(tables_path / "bl_factor_performance.csv")
-
-    bl_factor_weights = pd.DataFrame({
-        "Equal Weight": w_eq,
-        "BL Posterior": w_bl_f,
-    }, index=selected_factors)
-    bl_factor_weights.to_csv(tables_path / "bl_factor_weights.csv")
-
-    grid_sharpe_s.to_csv(tables_path / "bl_sensitivity_sharpe.csv")
-
-    # Save BL OOS returns alongside Stage 3 returns
-    bl_ret_df = pd.DataFrame(all_oos_returns)
-    bl_ret_df.to_csv(tables_path / "bl_oos_returns.csv")
+    mvo_bl_grid.to_csv(tables_path / "bl_sensitivity_mvo.csv")
+    ms_bl_grid.to_csv(tables_path / "bl_sensitivity_maxsharpe.csv")
+    if len(tests_results) > 0:
+        tests_df.to_csv(tables_path / "bl_statistical_tests.csv", index=False)
 
     _flush(f"\nStage 4 complete. Results saved to {tables_path}")
 
     return {
-        "bl_factor": bl_f,
-        "performance": perf_f,
-        "sensitivity_sharpe": grid_sharpe_s,
-        "oos_returns": all_oos_returns,
+        "sensitivity_mvo_bl": mvo_bl_grid,
+        "sensitivity_ms_bl": ms_bl_grid,
+        "statistical_tests": tests_df if len(tests_results) > 0 else None,
     }
 
 

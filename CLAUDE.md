@@ -119,9 +119,46 @@ uv run python scripts/stage_3_optimize.py
 ```
 
 ## What's Left To Do
-1. Stage 4 (Black-Litterman) — test end-to-end
-2. Documentation / LaTeX — to be done at the end
-3. Update `run_pipeline.py` to include Stage 4
+
+### 1. Stage 4: Black-Litterman — test end-to-end
+- Code: `scripts/stage_4_black_litterman.py`, `src/black_litterman/model.py`, `equilibrium.py`, `sensitivity.py`
+- Builds factor-based views (P, Q, Omega) from quintile sort results
+- Computes BL posterior returns and optimal weights
+- Runs OOS evaluation: BL weights vs market-cap weights
+- Includes Diebold-Mariano test and tau/delta sensitivity grid
+- Needs: integrate into `run_all_stages.py`, test for segfault resilience
+
+### 2. Rolling Backtest with Transaction Costs — untested
+- Code: `src/portfolio/backtest.py` (`RollingBacktest` class)
+- Rolling-window rebalancing (monthly/quarterly/annual) with lookback
+- Tracks weight drift between rebalances
+- Accounts for transaction costs (configurable bps)
+- Uses Ledoit-Wolf shrinkage for covariance estimation
+- Needs: apply to our 5 portfolio variants, compare net-of-cost performance
+
+### 3. Polished Visualization Suite — unused
+- Code: `src/visualization/portfolio_plots.py`
+- `plot_efficient_frontier()` — mean-variance frontier with GMV, Max Sharpe, Risk Parity points
+- `plot_rolling_sharpe_comparison()` — rolling 36M Sharpe for multiple portfolios
+- `plot_weight_evolution()` — stacked area chart of portfolio weights over time
+- All save as interactive HTML + static PNG
+- Needs: wire into Stage 3 or a dedicated plotting stage
+
+### 4. Statistical Tests — partially used
+- Code: `src/analytics/statistical_tests.py`
+- `diebold_mariano_test()` — compares two strategies' forecast accuracy (used in Stage 4 only)
+- `sharpe_ratio_test()` — Ledoit-Wolf test for equality of Sharpe ratios (Jobson-Korkie with Memmel correction)
+- Needs: run Sharpe ratio tests comparing our portfolios vs S&P 500, Hedge Fund Index, etc.
+
+### 5. Risk Analytics — partially used
+- Code: `src/analytics/risk.py`
+- `cornish_fisher_var()` — VaR adjusted for skewness and kurtosis (not used yet)
+- `drawdown_stats()` — max DD, avg DD, max duration (partially used)
+- Needs: add Cornish-Fisher VaR to benchmark comparison table
+
+### 6. Documentation / LaTeX Report — not started
+- To be done at the end
+- Should cover methodology, results, and interpretation
 
 ## User Preferences
 - Uses `uv` for Python package management

@@ -35,7 +35,7 @@ def run_factor_plots(config_path: str = None):
     print("=" * 60)
 
     # ── Load QSpreads from Stage 1 ──
-    qspreads_csv = tables_path / "factor_qspreads.csv"
+    qspreads_csv = tables_path / "s1_factor_qspreads.csv"
     if not qspreads_csv.exists():
         print("ERROR: factor_qspreads.csv not found. Run Stage 1 first.")
         return

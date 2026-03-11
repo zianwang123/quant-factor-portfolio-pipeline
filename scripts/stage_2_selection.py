@@ -77,7 +77,7 @@ def run_stage_2(config_path: str = None, factors: dict = None, qspreads: dict = 
 
     # Load QSpreads from Stage 1 CSV if available
     if qspreads is None:
-        qspreads_csv = config.find_prior_output("factor_qspreads.csv")
+        qspreads_csv = config.find_prior_output("s1_factor_qspreads.csv")
         if qspreads_csv is not None:
             _flush(f"  Loading QSpreads from {qspreads_csv.parent.parent.name}...")
             qs_df = pd.read_csv(qspreads_csv, index_col=0)
@@ -97,16 +97,16 @@ def run_stage_2(config_path: str = None, factors: dict = None, qspreads: dict = 
 
     # ── Save results ──
     _flush("\n[3/4] Saving results...")
-    results["fama_macbeth"].to_csv(tables_path / "fama_macbeth_results.csv")
-    results["ic_analysis"].to_csv(tables_path / "ic_analysis.csv")
-    results["consensus_scores"].to_frame("Score").to_csv(tables_path / "factor_consensus_ranking.csv")
+    results["fama_macbeth"].to_csv(tables_path / "s2_fama_macbeth.csv")
+    results["ic_analysis"].to_csv(tables_path / "s2_ic_analysis.csv")
+    results["consensus_scores"].to_frame("Score").to_csv(tables_path / "s2_consensus_ranking.csv")
 
     selected = results["selected_factors"]
     selected_df = pd.DataFrame({
         "factor": selected,
         "score": [results["consensus_scores"].get(f, 0) for f in selected],
     })
-    selected_df.to_csv(tables_path / "selected_factor_combination.csv", index=False)
+    selected_df.to_csv(tables_path / "s2_selected_factors.csv", index=False)
 
     # Save IC series for factor plots
     if "ic_series" in results:

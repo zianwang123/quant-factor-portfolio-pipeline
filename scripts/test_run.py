@@ -41,7 +41,7 @@ print("Saving QSpreads...", flush=True)
 import pandas as pd
 qspreads = pd.DataFrame({name: res["qspread"] for name, res in sort_results.items()})
 tables_path = config.tables_path()
-qspreads.to_csv(tables_path / "factor_qspreads.csv")
+qspreads.to_csv(tables_path / "s1_factor_qspreads.csv")
 print(f"QSpreads saved: {qspreads.shape}", flush=True)
 
 print("Testing matplotlib...", flush=True)

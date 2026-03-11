@@ -35,9 +35,12 @@ fig_path.mkdir(parents=True, exist_ok=True)
 
 # ── Load our OOS returns ──
 _flush("Loading OOS returns...")
-oos = pd.read_csv(tables / "oos_returns_all.csv", index_col=0)
+oos = pd.read_csv(tables / "s3_oos_returns.csv", index_col=0)
 oos.index = pd.PeriodIndex(oos.index, freq="M")
-our_ret = oos["Our: IC-Weighted"]
+# Find IC-Weighted column (may have suffix like "(factors only)")
+ic_cols = [c for c in oos.columns if "IC-Weighted" in c and c.startswith("Our:") and "BL" not in c]
+our_col = ic_cols[0] if ic_cols else "Our: IC-Weighted (factors only)"
+our_ret = oos[our_col]
 sp500_ret = oos["S&P 500"]
 _flush(f"  OOS shape: {oos.shape}")
 

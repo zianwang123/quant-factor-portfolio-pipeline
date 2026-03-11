@@ -1,5 +1,6 @@
 CLAUDE.md
 .claude/
+.maxser_info/
 data/raw/
 data/processed/
 outputs/

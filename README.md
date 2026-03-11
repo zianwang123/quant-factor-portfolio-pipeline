@@ -33,27 +33,27 @@ End-to-end quantitative factor investment pipeline: from alpha discovery through
 
 **Why are absolute returns low?** Our factor-only portfolios are **market-neutral long-short** (long Q1, short Q5 within S&P 500). They earn pure alpha with zero beta — the 3–8% returns come from cross-sectional dispersion, not market direction. The S&P 500's 10.8% is mostly equity risk premium, which our portfolios don't take. The right comparison is risk-adjusted: **8 of 9 variants beat the S&P 500 Sharpe (0.91)**, and all beat the HF Index EW (0.56).
 
-**Why do MAXSER variants have higher absolute returns?** MAXSER-Lasso/Ridge combine factor QSpreads with stock-level idiosyncratic alpha (50 selected stocks), producing portfolios with both factor and stock-specific exposure — hence higher returns (~14.7%) and higher vol (~13%).
+**Why include MAXSER?** Standard plug-in optimizers (MVO, Max Sharpe) cannot be applied to the joint [factors + stocks] universe because stock returns contain factor exposures — optimizing over both double-counts factor risk and inflates effective leverage. MAXSER (Ao, Li, Zheng 2019) solves this by decomposing the portfolio into a factor leg and an idiosyncratic leg via sparse regression on the squared Sharpe ratio, with beta-adjustment to avoid double-counting. This is the only principled way to combine factor allocation with stock-level alpha in one portfolio. The higher absolute returns (~14.7%) and vol (~13%) reflect the added stock-specific exposure from 50 selected stocks.
 
 ### Rolling Backtest (Net of 10 bps Transaction Costs)
 
 | Strategy | Net Sharpe | Gross Sharpe | Avg Turnover | Total Cost (bps) | Max DD |
 |----------|-----------|-------------|-------------|-----------------|--------|
-| Equal Weight | **1.231** | 1.235 | 5.0% | 55 | -3.2% |
-| Risk Parity | **1.148** | 1.153 | 5.6% | 62 | -3.1% |
-| MVO + BL | **1.087** | 1.116 | 27.0% | 300 | -6.4% |
-| IC-Weighted + BL | 0.891 | 0.915 | 18.2% | 202 | -7.8% |
-| Max Sharpe + BL | 0.865 | 0.894 | 44.1% | 490 | -4.4% |
-| MVO | 0.853 | 0.886 | 56.4% | 626 | -13.3% |
-| IC-Weighted | 0.756 | 0.784 | 19.3% | 214 | -9.0% |
-| Max Sharpe | 0.749 | 0.786 | 56.1% | 622 | -7.4% |
+| Equal Weight | **1.211** | 1.215 | 5.0% | 55 | -3.2% |
+| Risk Parity | **1.155** | 1.160 | 5.6% | 62 | -3.1% |
+| MVO + BL | **1.001** | 1.032 | 27.0% | 300 | -6.4% |
+| Max Sharpe + BL | 0.833 | 0.861 | 44.1% | 490 | -4.4% |
+| IC-Weighted + BL | 0.815 | 0.839 | 18.2% | 202 | -7.8% |
+| MVO | 0.760 | 0.795 | 56.4% | 626 | -13.3% |
+| Max Sharpe | 0.719 | 0.756 | 56.1% | 622 | -7.4% |
+| IC-Weighted | 0.686 | 0.714 | 19.3% | 214 | -9.0% |
 
-**What happens after transaction costs?** Simple strategies dominate: Equal Weight (net Sharpe 1.23) barely loses anything to costs because turnover is only 5%. MVO loses 3.3 Sharpe points (0.886 → 0.853) from 56% turnover. This is the central tension in quant PM: more sophisticated optimization ≠ better net performance.
+**What happens after transaction costs?** Simple strategies dominate: Equal Weight (net Sharpe 1.21) barely loses anything to costs because turnover is only 5%. MVO loses 3.5 Sharpe points (0.795 → 0.760) from 56% turnover. This is the central tension in quant PM: more sophisticated optimization ≠ better net performance.
 
 **Does Black-Litterman help?** Yes, for optimizers sensitive to return estimation error:
-- **MVO**: BL improves net Sharpe from 0.853 to 1.087 (+0.23) and halves turnover (56% → 27%)
-- **Max Sharpe**: BL improves net Sharpe from 0.749 to 0.865 (+0.12), reduces turnover (56% → 44%)
-- **IC-Weighted**: BL improves net Sharpe from 0.756 to 0.891 (+0.14) — BL helps here by stabilizing the return estimates IC weights are applied to
+- **MVO**: BL improves net Sharpe from 0.760 to 1.001 (+0.24) and halves turnover (56% → 27%)
+- **Max Sharpe**: BL improves net Sharpe from 0.719 to 0.833 (+0.11), reduces turnover (56% → 44%)
+- **IC-Weighted**: BL improves net Sharpe from 0.686 to 0.815 (+0.13) — BL helps here by stabilizing the return estimates IC weights are applied to
 
 BL shrinks posterior returns toward the equal-weight equilibrium, dampening the extreme positions that cause MVO instability. It acts as a **return regularizer**, not a standalone allocation method.
 
@@ -111,7 +111,7 @@ Seven portfolio variants constructed from selected factor QSpreads:
 
 Black-Litterman variants use BL as a **return estimation method**: compute posterior expected returns from equilibrium + views (in-sample means), then feed to the optimizer.
 
-Additionally, **factor+stock portfolios** combine factor QSpread allocation with stock-level idiosyncratic alpha using MAXSER (Ao, Li, Zheng 2019) sparse regression.
+Additionally, **factor+stock portfolios** combine factor QSpread allocation with stock-level idiosyncratic alpha using MAXSER (Ao, Li, Zheng 2019). MAXSER solves the weight double-counting problem that prevents standard optimizers from being applied to the joint [factors + stocks] space: it decomposes the portfolio into a factor leg (tangency portfolio over K factors) and an idiosyncratic leg (sparse regression on stock residuals), with beta-adjustment to ensure factor exposure is not counted twice.
 
 #### Portfolio Variant Combo Tree
 
@@ -162,9 +162,35 @@ Monthly rolling backtest (36-month lookback, quarterly rebalance) with:
 - **8 strategies**: 5 base + 3 BL variants (IC-Weighted+BL, MVO+BL, MaxSharpe+BL)
 - **Adaptive factor re-selection**: Annual greedy forward selection from full 20-factor universe
 
-**BL improves MVO** (net Sharpe 0.853 → 1.087, turnover halved) and **Max Sharpe** (0.749 → 0.865). BL shrinks extreme weights toward equilibrium, acting as a natural regularizer.
+**BL improves MVO** (net Sharpe 0.760 → 1.001, turnover halved) and **Max Sharpe** (0.719 → 0.833). BL shrinks extreme weights toward equilibrium, acting as a natural regularizer.
 
-**Adaptive re-selection underperforms fixed factors** across all strategies (EW: 1.231 → 0.727), demonstrating the cost of factor chasing and outer turnover.
+**Adaptive re-selection underperforms fixed factors** across all strategies (EW: 1.211 → 0.727), demonstrating the cost of factor chasing and outer turnover.
+
+### Why Equal Weight Performs Well in the Rolling Backtest
+
+Equal Weight achieves the best net Sharpe in the rolling backtest (1.21) even though it uses no optimization. Two mechanisms drive this:
+
+1. **Quarterly rebalancing harvests mean-reversion.** By resetting to 1/K every quarter, the rolling backtest systematically sells factors that grew (overweighted by drift) and buys factors that shrank. This captures a weak but persistent mean-reversion signal across factor QSpreads — the same effect documented in DeMiguel et al. (2009).
+
+2. **Low turnover preserves alpha.** EW's 5% average turnover costs only 55 bps total, while MVO's 56% turnover costs 626 bps. More sophisticated optimization does not compensate for the transaction cost drag at these rebalancing frequencies.
+
+### Systematic Discipline vs Discretionary Override
+
+A natural question: if the static strategy "works fine this month," should a practitioner stick with the rolling backtest framework or override it?
+
+- **Industry practice**: Practitioners commit to the systematic framework ex ante and follow it. If the rolling backtest says to rebalance, you rebalance — cherry-picking which month to follow is data snooping in real time.
+- **Exception**: If the framework itself is broken (data error, regime change like COVID), practitioners may override — but this requires a documented, pre-agreed process (e.g., "halt if drawdown > 15%"), not ad-hoc decisions.
+- **Our evidence**: Adaptive factor re-selection — which is exactly "switch when it looks better" — underperforms fixed factors across all strategies (EW: 1.21 → 0.73). This directly demonstrates the cost of second-guessing the systematic process.
+- **Key principle**: The backtest result is the expected value over many months. Any single month can deviate. Sticking with the systematic approach is what distinguishes quantitative from discretionary portfolio management.
+
+### Future Work
+
+1. **Bootstrap Confidence Intervals** — Block bootstrap (block size ~12 months) for 95% CI on Sharpe ratios. Answers "is Sharpe 1.20 significantly different from 1.0?"
+2. **Factor Risk Attribution** — Decompose monthly portfolio returns into contributions from each factor. Stacked area chart of factor contributions over time.
+3. **Turnover-Constrained Optimization** — Add turnover penalty to MVO objective and sweep to produce Sharpe-vs-turnover efficient frontier.
+4. **Regime Analysis** — Classify months as bull/bear, compute conditional Sharpe by regime. Shows which factors crash in drawdowns.
+5. **Stress Testing** — Apply historical scenarios (2008 GFC, 2020 COVID, 2022 rate hikes) to current portfolio weights using full-sample factor returns.
+6. **OOS Factor Decay** — Run IC decay analysis on OOS data and compare with in-sample decay curves to measure alpha half-life.
 
 ## Project Structure
 

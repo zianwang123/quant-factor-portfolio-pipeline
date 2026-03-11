@@ -100,7 +100,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     # ══════════════════════════════════════════════════════════════════
     print("\n[1/7] Loading factor data...")
 
-    qspreads_path = config.find_prior_output("factor_qspreads.csv")
+    qspreads_path = config.find_prior_output("s1_factor_qspreads.csv")
     if qspreads is None and qspreads_path is not None:
         print(f"  Loading QSpreads from {qspreads_path.parent.parent.name}...")
         qs_df = pd.read_csv(qspreads_path, index_col=0)
@@ -119,7 +119,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
         qspreads = {name: res["qspread"] for name, res in sort_results.items()}
 
     if selected_factors is None:
-        sel_path = config.find_prior_output("selected_factor_combination.csv")
+        sel_path = config.find_prior_output("s2_selected_factors.csv")
         if sel_path is not None:
             sel_df = pd.read_csv(sel_path)
             selected_factors = sel_df["factor"].tolist()
@@ -129,7 +129,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
             print(f"  WARNING: No Stage 2 output found, using defaults: {selected_factors}")
 
     if ic_table is None:
-        ic_path = config.find_prior_output("ic_analysis.csv")
+        ic_path = config.find_prior_output("s2_ic_analysis.csv")
         if ic_path is not None:
             ic_table = pd.read_csv(ic_path, index_col=0)
 
@@ -141,7 +141,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     print(f"  Selected factors: {selected_factors}")
     print(f"  QSpread data: {sel_qspreads.shape[0]} months, {K} factors")
 
-    sel_qspreads.to_csv(tables_path / "selected_qspreads.csv")
+    sel_qspreads.to_csv(tables_path / "s3_selected_qspreads.csv")
     print(f"  [DUMP] selected_qspreads.csv saved"); _flush()
 
     # ══════════════════════════════════════════════════════════════════
@@ -241,7 +241,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     weight_df = pd.DataFrame(factor_only, index=selected_factors)
     print(f"\n  Factor-Only Allocation Weights:")
     print(weight_df.round(4))
-    weight_df.to_csv(tables_path / "factor_allocation_weights.csv")
+    weight_df.to_csv(tables_path / "s3_allocation_weights.csv")
     print(f"  [DUMP] factor_allocation_weights.csv saved")
 
     # Compute factor-only return series
@@ -250,7 +250,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
         factor_only_returns[pname] = sel_qspreads @ weights
 
     our_ret_df = pd.DataFrame(factor_only_returns)
-    our_ret_df.to_csv(tables_path / "our_portfolio_returns.csv")
+    our_ret_df.to_csv(tables_path / "s3_portfolio_returns_full.csv")
     print(f"  [DUMP] our_portfolio_returns.csv saved"); _flush()
 
     # ══════════════════════════════════════════════════════════════════
@@ -346,10 +346,10 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     for method, wd in factor_stock.items():
         safe = method.lower().replace(" ", "_").replace("+", "").replace("(", "").replace(")", "").replace("/", "_")
         pd.DataFrame({"factor": selected_factors, "weight": wd["w_f"]}).to_csv(
-            tables_path / f"fs_{safe}_factor_weights.csv", index=False)
+            tables_path / f"s3_{safe}_factor_weights.csv", index=False)
         sw = pd.DataFrame({"gvkey": valid_stocks, "weight": wd["w_s"]})
         sw = sw[sw["weight"].abs() > 1e-8].sort_values("weight", key=abs, ascending=False)
-        sw.to_csv(tables_path / f"fs_{safe}_stock_weights.csv", index=False)
+        sw.to_csv(tables_path / f"s3_{safe}_stock_weights.csv", index=False)
 
     print(f"  Saved factor+stock weight files ({N_stocks} stocks)")
 
@@ -393,16 +393,17 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
         else:
             rf_aligned = rf.reindex(df.index).fillna(0)
             df_excess = df.sub(rf_aligned, axis=0)
+            # EW aggregate
             ew_ret = df_excess.mean(axis=1)
             benchmarks[f"{sheet_name} (EW)"] = ew_ret
-            sharpes = df_excess.mean() / df_excess.std()
-            best_fund = sharpes.idxmax()
-            benchmarks[f"{sheet_name} Best ({best_fund})"] = df_excess[best_fund]
+            # All individual funds/indices
+            for col in df_excess.columns:
+                benchmarks[col] = df_excess[col]
 
     print(f"  Benchmarks loaded: {list(benchmarks.keys())}")
 
     bench_df = pd.DataFrame(benchmarks)
-    bench_df.to_csv(tables_path / "benchmark_raw_returns.csv")
+    bench_df.to_csv(tables_path / "s3_benchmark_raw_returns.csv")
     print(f"  [DUMP] benchmark_raw_returns.csv saved"); _flush()
 
     # ══════════════════════════════════════════════════════════════════
@@ -423,7 +424,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
         factor_stock_returns[name] = pd.Series(r, index=factor_oos.index)
 
     # Save MAXSER OOS returns
-    pd.DataFrame(factor_stock_returns).to_csv(tables_path / "maxser_oos_returns.csv")
+    pd.DataFrame(factor_stock_returns).to_csv(tables_path / "s3_maxser_oos_returns.csv")
     print(f"  [DUMP] maxser_oos_returns.csv saved"); _flush()
 
     # ══════════════════════════════════════════════════════════════════
@@ -492,19 +493,19 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     print(comp_df.round(4))
 
     # Save comparison and OOS returns
-    comp_df.to_csv(tables_path / "benchmark_comparison.csv")
+    comp_df.to_csv(tables_path / "s3_benchmark_comparison.csv")
     oos_returns_all = {}
     for name, ret in all_series.items():
         r = ret.loc[common_start:common_end].dropna()
         if len(r) > 0:
             oos_returns_all[name] = r
-    pd.DataFrame(oos_returns_all).to_csv(tables_path / "oos_returns_all.csv")
+    pd.DataFrame(oos_returns_all).to_csv(tables_path / "s3_oos_returns.csv")
     print(f"  [DUMP] benchmark_comparison.csv + oos_returns_all.csv saved"); _flush()
 
     # Save separate MAXSER performance table for backward compatibility
     maxser_names = [n for n in comp_df.index if "F+S" in n or "MAXSER" in n]
     if maxser_names:
-        comp_df.loc[maxser_names].to_csv(tables_path / "maxser_performance.csv")
+        comp_df.loc[maxser_names].to_csv(tables_path / "s3_maxser_performance.csv")
 
     # ── Statistical tests: our best vs each benchmark ────────────────
     print("\n  Statistical Tests (Sharpe Ratio Equality):")
@@ -544,7 +545,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
             "Sharpe": (is_ret.mean() * 12) / (is_ret.std() * np.sqrt(12)),
         }
     is_df = pd.DataFrame(is_comparison).T
-    is_df.to_csv(tables_path / "factor_portfolio_in_sample.csv")
+    is_df.to_csv(tables_path / "s3_in_sample_performance.csv")
     print(f"  [DUMP] factor_portfolio_in_sample.csv saved"); _flush()
 
     # Efficient frontier plot (factor-only)

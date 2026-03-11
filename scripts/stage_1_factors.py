@@ -86,7 +86,7 @@ def run_stage_1(config_path: str = None):
 
     # *** INTERMEDIATE DUMP: save QSpreads and sort results immediately ***
     qspreads = pd.DataFrame({name: res["qspread"] for name, res in sort_results.items()})
-    qspreads.to_csv(tables_path / "factor_qspreads.csv")
+    qspreads.to_csv(tables_path / "s1_factor_qspreads.csv")
     _flush(f"  QSpreads saved: {qspreads.shape}")
 
     import pickle
@@ -101,7 +101,7 @@ def run_stage_1(config_path: str = None):
         capital_iq, config.dates.validation_start, config.dates.end,
     )
     print(validation)
-    validation.to_csv(tables_path / "factor_benchmark_correlations.csv")
+    validation.to_csv(tables_path / "s1_factor_benchmark_correlations.csv")
     _flush()
 
     # ── Step 5: Analytics ──
@@ -114,13 +114,13 @@ def run_stage_1(config_path: str = None):
     desc_stats = compute_descriptive_stats(qspreads_pct)
     print("\nDescriptive Statistics:")
     print(desc_stats.round(4))
-    desc_stats.to_csv(tables_path / "factor_descriptive_stats.csv")
+    desc_stats.to_csv(tables_path / "s1_factor_descriptive_stats.csv")
     _flush()
 
     t_tests = t_test_factor_spreads(qspreads)
     print("\nt-Test for Mean QSpread != 0:")
     print(t_tests.round(4))
-    t_tests.to_csv(tables_path / "factor_t_tests.csv")
+    t_tests.to_csv(tables_path / "s1_factor_t_tests.csv")
     _flush()
 
     turnover = {name: res["turnover"] for name, res in sort_results.items()}

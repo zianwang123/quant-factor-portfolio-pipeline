@@ -85,7 +85,7 @@ def run_stage_4(config_path: str = None):
 
     # ── A1: Load factor QSpreads ──
     _flush("\n[A1] Loading factor data...")
-    qspreads_csv = tables_path / "factor_qspreads.csv"
+    qspreads_csv = tables_path / "s1_factor_qspreads.csv"
     if not qspreads_csv.exists():
         _flush("  ERROR: factor_qspreads.csv not found. Run Stage 1 first.")
         return
@@ -93,7 +93,7 @@ def run_stage_4(config_path: str = None):
     qs_df = pd.read_csv(qspreads_csv, index_col=0)
     qs_df.index = pd.PeriodIndex(qs_df.index, freq="M")
 
-    selected_csv = tables_path / "selected_factor_combination.csv"
+    selected_csv = tables_path / "s2_selected_factors.csv"
     if selected_csv.exists():
         sel_df = pd.read_csv(selected_csv)
         selected_factors = sel_df["factor"].tolist()
@@ -106,12 +106,12 @@ def run_stage_4(config_path: str = None):
 
     # Load IC and FM tables for view confidence
     ic_table = None
-    ic_csv = tables_path / "ic_analysis.csv"
+    ic_csv = tables_path / "s2_ic_analysis.csv"
     if ic_csv.exists():
         ic_table = pd.read_csv(ic_csv, index_col=0)
 
     fm_table = None
-    fm_csv = tables_path / "fama_macbeth_results.csv"
+    fm_csv = tables_path / "s2_fama_macbeth.csv"
     if fm_csv.exists():
         fm_table = pd.read_csv(fm_csv, index_col=0)
 
@@ -151,7 +151,7 @@ def run_stage_4(config_path: str = None):
 
     # ── A3: Load Stage 3 baselines ──
     _flush("\n[A3] Loading Stage 3 baseline weights...")
-    weights_csv = tables_path / "factor_allocation_weights.csv"
+    weights_csv = tables_path / "s3_allocation_weights.csv"
     if not weights_csv.exists():
         _flush("  ERROR: factor_allocation_weights.csv not found. Run Stage 3 first.")
         return
@@ -483,18 +483,71 @@ def run_stage_4(config_path: str = None):
         _flush("  views are too diffuse across ~274 individual stocks. This motivates")
         _flush("  our focus on factor-level allocation in Stages 3-5.")
 
-        stock_perf_df.to_csv(tables_path / "bl_stock_level_performance.csv")
+        stock_perf_df.to_csv(tables_path / "s4_bl_stock_level.csv")
 
     # ══════════════════════════════════════════════════════════════
     # Save all results
     # ══════════════════════════════════════════════════════════════
+    # ── A6: Sensitivity heatmap plots ──
+    _flush("\n[A6] Generating sensitivity heatmap plots...")
+
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        fig_hm = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=[
+                f"MVO + BL OOS Sharpe (baseline MVO: {mvo_sr:.2f})",
+                f"Max Sharpe + BL OOS Sharpe (baseline: {ms_sr:.2f})",
+            ],
+            horizontal_spacing=0.12,
+        )
+
+        for col_idx, (grid, baseline, title) in enumerate([
+            (mvo_bl_grid, mvo_sr, "MVO + BL"),
+            (ms_bl_grid, ms_sr, "Max Sharpe + BL"),
+        ], 1):
+            z = grid.values
+            fig_hm.add_trace(go.Heatmap(
+                z=z,
+                x=grid.columns.tolist(),
+                y=grid.index.tolist(),
+                colorscale="RdYlGn",
+                zmid=baseline,
+                text=[[f"{v:.2f}" for v in row] for row in z],
+                texttemplate="%{text}",
+                textfont=dict(size=11),
+                showscale=(col_idx == 2),
+                colorbar=dict(title="Sharpe") if col_idx == 2 else None,
+            ), row=1, col=col_idx)
+
+            fig_hm.update_xaxes(title_text="δ (risk aversion)", row=1, col=col_idx)
+            fig_hm.update_yaxes(title_text="τ (prior uncertainty)" if col_idx == 1 else "", row=1, col=col_idx)
+
+        fig_hm.update_layout(
+            title="BL Hyperparameter Sensitivity: OOS Sharpe Ratio (τ × δ Grid)",
+            template="plotly_white",
+            height=500, width=1000,
+            font=dict(size=13),
+        )
+
+        fig_hm.write_html(str(fig_path / "bl_sensitivity_heatmap.html"), include_plotlyjs="cdn")
+        try:
+            fig_hm.write_image(str(fig_path / "bl_sensitivity_heatmap.png"), width=1000, height=500, scale=2)
+        except Exception:
+            pass
+        _flush("  Saved bl_sensitivity_heatmap.html")
+    except Exception as e:
+        _flush(f"  Heatmap plot failed: {e}")
+
     _flush("\n" + "─" * 60)
     _flush("Saving results...")
 
-    mvo_bl_grid.to_csv(tables_path / "bl_sensitivity_mvo.csv")
-    ms_bl_grid.to_csv(tables_path / "bl_sensitivity_maxsharpe.csv")
+    mvo_bl_grid.to_csv(tables_path / "s4_bl_sensitivity_mvo.csv")
+    ms_bl_grid.to_csv(tables_path / "s4_bl_sensitivity_maxsharpe.csv")
     if len(tests_results) > 0:
-        tests_df.to_csv(tables_path / "bl_statistical_tests.csv", index=False)
+        tests_df.to_csv(tables_path / "s4_bl_statistical_tests.csv", index=False)
 
     _flush(f"\nStage 4 complete. Results saved to {tables_path}")
 

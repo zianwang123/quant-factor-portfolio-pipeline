@@ -362,11 +362,13 @@ def run_stage_5(config_path: str = None):
     print("=" * 60)
 
     oos_start = config.dates.out_of_sample_start
+    oos_end = config.dates.end
     oos_start_period = pd.Period(oos_start, freq="M")
+    oos_end_period = pd.Period(oos_end, freq="M")
 
     # ── Load factor QSpreads ──
     _flush("\n[1/4] Loading factor data...")
-    qspreads_csv = tables_path / "factor_qspreads.csv"
+    qspreads_csv = tables_path / "s1_factor_qspreads.csv"
     if not qspreads_csv.exists():
         _flush("  ERROR: factor_qspreads.csv not found. Run Stage 1 first.")
         return
@@ -375,7 +377,7 @@ def run_stage_5(config_path: str = None):
     qs_df.index = pd.PeriodIndex(qs_df.index, freq="M")
 
     # Load selected factors
-    selected_csv = tables_path / "selected_factor_combination.csv"
+    selected_csv = tables_path / "s2_selected_factors.csv"
     if selected_csv.exists():
         sel_df = pd.read_csv(selected_csv)
         selected_factors = sel_df["factor"].tolist()
@@ -383,8 +385,10 @@ def run_stage_5(config_path: str = None):
         selected_factors = ["AccrualRatio", "CFTP", "STReversal", "AssetGrowth", "ROE"]
 
     sel_qspreads = qs_df[selected_factors].dropna()
+    # Filter to config end date to match Stage 3 OOS window exactly
+    sel_qspreads = sel_qspreads.loc[sel_qspreads.index <= oos_end_period]
     _flush(f"  Selected factors: {selected_factors}")
-    _flush(f"  QSpread data: {sel_qspreads.shape}")
+    _flush(f"  QSpread data: {sel_qspreads.shape} (up to {oos_end})")
 
     # ── Load benchmark returns for comparison plots ──
     _flush("  Loading benchmark data for plots...")
@@ -401,7 +405,7 @@ def run_stage_5(config_path: str = None):
         _flush(f"  WARNING: Could not load S&P 500: {e}")
 
     # Load additional benchmarks from Stage 3 output
-    benchmark_csv = tables_path / "benchmark_raw_returns.csv"
+    benchmark_csv = tables_path / "s3_benchmark_raw_returns.csv"
     if benchmark_csv.exists():
         try:
             bm_df = pd.read_csv(benchmark_csv, index_col=0)
@@ -479,9 +483,9 @@ def run_stage_5(config_path: str = None):
             turnover = res_net.get("turnover", pd.Series(dtype=float))
             costs = res_net.get("transaction_costs", pd.Series(dtype=float))
 
-            # Only report OOS portion
-            ret_g_oos = ret_g.loc[ret_g.index >= oos_start_period]
-            ret_n_oos = ret_n.loc[ret_n.index >= oos_start_period]
+            # Only report OOS portion (matching Stage 3 window exactly)
+            ret_g_oos = ret_g.loc[(ret_g.index >= oos_start_period) & (ret_g.index <= oos_end_period)]
+            ret_n_oos = ret_n.loc[(ret_n.index >= oos_start_period) & (ret_n.index <= oos_end_period)]
 
             _flush(f"    Total months: {len(ret_g)}, OOS months: {len(ret_g_oos)}")
             _flush(f"    Gross Sharpe (OOS): {_sharpe(ret_g_oos):.3f}")
@@ -503,9 +507,9 @@ def run_stage_5(config_path: str = None):
         ret_n = results_net[pname]["portfolio_returns"]
         turnover = results_net[pname].get("turnover", pd.Series(dtype=float))
 
-        # Filter to OOS
-        ret_g_oos = ret_g.loc[ret_g.index >= oos_start_period]
-        ret_n_oos = ret_n.loc[ret_n.index >= oos_start_period]
+        # Filter to OOS (matching Stage 3 window exactly)
+        ret_g_oos = ret_g.loc[(ret_g.index >= oos_start_period) & (ret_g.index <= oos_end_period)]
+        ret_n_oos = ret_n.loc[(ret_n.index >= oos_start_period) & (ret_n.index <= oos_end_period)]
 
         oos_returns_gross[pname] = ret_g_oos
         oos_returns_net[pname] = ret_n_oos
@@ -535,7 +539,7 @@ def run_stage_5(config_path: str = None):
     print(perf_df.round(4))
 
     # Also show the static (non-rolling) Sharpe for comparison
-    static_csv = tables_path / "benchmark_comparison.csv"
+    static_csv = tables_path / "s3_benchmark_comparison.csv"
     if static_csv.exists():
         static = pd.read_csv(static_csv, index_col=0)
         _flush("\n  Static (non-rolling) Sharpe for reference:")
@@ -547,14 +551,14 @@ def run_stage_5(config_path: str = None):
                        f"rolling_net={perf_df.loc[pname, 'Net Sharpe']:.3f}")
 
     # ── Save tables ──
-    perf_df.to_csv(tables_path / "backtest_performance.csv")
+    perf_df.to_csv(tables_path / "s5_backtest_performance.csv")
     _flush(f"\n  Saved backtest_performance.csv")
 
     # Save OOS returns for plotting
     gross_df = pd.DataFrame(oos_returns_gross)
     net_df = pd.DataFrame(oos_returns_net)
-    gross_df.to_csv(tables_path / "backtest_returns_gross.csv")
-    net_df.to_csv(tables_path / "backtest_returns_net.csv")
+    gross_df.to_csv(tables_path / "s5_backtest_returns_gross.csv")
+    net_df.to_csv(tables_path / "s5_backtest_returns_net.csv")
 
     # ── Generate plots ──
     _flush("\n[4/4] Generating plots...")
@@ -583,7 +587,7 @@ def run_stage_5(config_path: str = None):
     # Filter benchmarks to OOS period
     oos_benchmarks = {}
     for bname, bret in benchmark_returns.items():
-        bret_oos = bret.loc[bret.index >= oos_start_period].dropna()
+        bret_oos = bret.loc[(bret.index >= oos_start_period) & (bret.index <= oos_end_period)].dropna()
         if len(bret_oos) > 12:
             oos_benchmarks[bname] = bret_oos
 
@@ -831,7 +835,7 @@ def run_stage_5(config_path: str = None):
                 "BL Turnover": results_net[bl_name].get("turnover", pd.Series(dtype=float)).mean(),
             })
         bl_summary_df = pd.DataFrame(bl_summary).set_index("Optimizer")
-        bl_summary_df.to_csv(tables_path / "bl_vs_nonbl_summary.csv")
+        bl_summary_df.to_csv(tables_path / "s5_bl_vs_nonbl.csv")
         _flush("\n  BL vs Non-BL Summary (same optimizer, different return estimates):")
         print(bl_summary_df.round(4))
         _flush("  Saved bl_vs_nonbl_summary.csv")
@@ -849,6 +853,7 @@ def run_stage_5(config_path: str = None):
     # Load ALL factor QSpreads (full universe, not just selected)
     all_qs_df = pd.read_csv(qspreads_csv, index_col=0)
     all_qs_df.index = pd.PeriodIndex(all_qs_df.index, freq="M")
+    all_qs_df = all_qs_df.loc[all_qs_df.index <= oos_end_period]
     all_qs_df = all_qs_df.dropna(axis=1, how="all")
     _flush(f"\n  Full factor universe: {all_qs_df.shape[1]} factors")
     _flush(f"  Data range: {all_qs_df.index[0]} to {all_qs_df.index[-1]}")
@@ -881,7 +886,8 @@ def run_stage_5(config_path: str = None):
             **opt_kwargs,
         )
         adaptive_results[aname] = res
-        ret_oos = res["portfolio_returns"].loc[res["portfolio_returns"].index >= oos_start_period]
+        ret_all = res["portfolio_returns"]
+        ret_oos = ret_all.loc[(ret_all.index >= oos_start_period) & (ret_all.index <= oos_end_period)]
         _flush(f"    OOS months: {len(ret_oos)}, Net Sharpe: {_sharpe(ret_oos):.3f}")
         _flush(f"    Avg turnover: {res['turnover'].mean():.3f}")
         _flush(f"    Total costs: {res['transaction_costs'].sum()*100:.2f}%")
@@ -902,7 +908,7 @@ def run_stage_5(config_path: str = None):
         res = bt.run(**opt_kwargs)
         fixed_results[fname] = res
         ret = res["portfolio_returns"]
-        ret_oos = ret.loc[ret.index >= oos_start_period]
+        ret_oos = ret.loc[(ret.index >= oos_start_period) & (ret.index <= oos_end_period)]
         _flush(f"    OOS months: {len(ret_oos)}, Net Sharpe: {_sharpe(ret_oos):.3f}")
 
     # ── Adaptive vs Fixed comparison table ──
@@ -911,30 +917,30 @@ def run_stage_5(config_path: str = None):
 
     for aname, ares in adaptive_results.items():
         aret = ares["portfolio_returns"]
-        aret_oos = aret.loc[aret.index >= oos_start_period]
+        aret_oos = aret.loc[(aret.index >= oos_start_period) & (aret.index <= oos_end_period)]
 
         # Matching fixed strategy
         fname = aname.replace("Adaptive", "Fixed")
         fres = fixed_results.get(fname, {})
         fret = fres.get("portfolio_returns", pd.Series(dtype=float))
-        fret_oos = fret.loc[fret.index >= oos_start_period] if len(fret) > 0 else pd.Series(dtype=float)
+        fret_oos = fret.loc[(fret.index >= oos_start_period) & (fret.index <= oos_end_period)] if len(fret) > 0 else pd.Series(dtype=float)
 
         # Count factor changes in OOS
         oos_changes = sum(
             1 for d, c in ares.get("outer_turnover", {}).items()
-            if pd.Period(d, freq="M") >= oos_start_period and c["n_changed"] > 0
+            if oos_start_period <= pd.Period(d, freq="M") <= oos_end_period and c["n_changed"] > 0
         )
         total_factors_changed = sum(
             c["n_changed"] for d, c in ares.get("outer_turnover", {}).items()
-            if pd.Period(d, freq="M") >= oos_start_period
+            if oos_start_period <= pd.Period(d, freq="M") <= oos_end_period
         )
 
         # OOS-only costs for fair comparison
         a_costs_oos = ares["transaction_costs"]
         if not a_costs_oos.empty:
-            a_costs_oos = a_costs_oos.loc[a_costs_oos.index >= oos_start_period]
+            a_costs_oos = a_costs_oos.loc[(a_costs_oos.index >= oos_start_period) & (a_costs_oos.index <= oos_end_period)]
         f_costs = fres.get("transaction_costs", pd.Series(dtype=float))
-        f_costs_oos = f_costs.loc[f_costs.index >= oos_start_period] if len(f_costs) > 0 else pd.Series(dtype=float)
+        f_costs_oos = f_costs.loc[(f_costs.index >= oos_start_period) & (f_costs.index <= oos_end_period)] if len(f_costs) > 0 else pd.Series(dtype=float)
 
         adapt_rows.append({
             "Strategy": aname,
@@ -950,7 +956,7 @@ def run_stage_5(config_path: str = None):
 
     adapt_df = pd.DataFrame(adapt_rows).set_index("Strategy")
     print(adapt_df.round(4))
-    adapt_df.to_csv(tables_path / "adaptive_vs_fixed_comparison.csv")
+    adapt_df.to_csv(tables_path / "s5_adaptive_vs_fixed.csv")
     _flush("  Saved adaptive_vs_fixed_comparison.csv")
 
     # Show which factors were selected at each re-selection date
@@ -984,7 +990,7 @@ def run_stage_5(config_path: str = None):
             if pname not in res_dict:
                 continue
             ret = res_dict[pname].get("portfolio_returns", pd.Series(dtype=float)) if isinstance(res_dict[pname], dict) else res_dict[pname]["portfolio_returns"]
-            ret_oos = ret.loc[ret.index >= oos_start_period]
+            ret_oos = ret.loc[(ret.index >= oos_start_period) & (ret.index <= oos_end_period)]
             if len(ret_oos) == 0:
                 continue
             cum = (1 + ret_oos).cumprod()

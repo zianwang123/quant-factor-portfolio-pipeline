@@ -64,14 +64,14 @@ def run_stage_3b(config_path: str = None):
     sp500_df = load_sp500_returns(config)
     rf = sp500_df["rf"]
 
-    qs_path = tables_path / "factor_qspreads.csv"
+    qs_path = tables_path / "s1_factor_qspreads.csv"
     if not qs_path.exists():
         print("  ERROR: factor_qspreads.csv not found. Run Stage 1 first.")
         return
     qs_df = pd.read_csv(qs_path, index_col=0)
     qs_df.index = pd.PeriodIndex(qs_df.index, freq="M")
 
-    sel_path = tables_path / "selected_factor_combination.csv"
+    sel_path = tables_path / "s2_selected_factors.csv"
     if sel_path.exists():
         selected_factors = pd.read_csv(sel_path)["factor"].tolist()
     else:
@@ -229,7 +229,7 @@ def run_stage_3b(config_path: str = None):
     # ── Method 1c: IC-Weighted on [factors + stocks] ──────────────────
     print("  (a3) IC-Weighted on combined [factors + stocks]...")
     # IC for factors: use saved IC values; for stocks: use rank IC of stock returns
-    ic_path = tables_path / "ic_analysis.csv"
+    ic_path = tables_path / "s2_ic_analysis.csv"
     ic_values = np.zeros(K + len(sel_idx))
     if ic_path.exists():
         ic_table = pd.read_csv(ic_path, index_col=0)
@@ -318,7 +318,7 @@ def run_stage_3b(config_path: str = None):
     portfolio_oos["S&P 500"] = sp500_oos_excess
 
     # Our existing Stage 3 portfolios for reference
-    our_ret_path = tables_path / "our_portfolio_returns.csv"
+    our_ret_path = tables_path / "s3_portfolio_returns_full.csv"
     if our_ret_path.exists():
         our_ret = pd.read_csv(our_ret_path, index_col=0)
         our_ret.index = pd.PeriodIndex(our_ret.index, freq="M")
@@ -390,11 +390,11 @@ def run_stage_3b(config_path: str = None):
     # ── Save results ──────────────────────────────────────────────────
     print("\n[6/6] Saving results...")
 
-    perf_df.to_csv(tables_path / "maxser_performance.csv")
+    perf_df.to_csv(tables_path / "s3_maxser_performance.csv")
     print(f"  Saved maxser_performance.csv")
 
     oos_df = pd.DataFrame({k: v for k, v in portfolio_oos.items() if isinstance(v, pd.Series)})
-    oos_df.to_csv(tables_path / "maxser_oos_returns.csv")
+    oos_df.to_csv(tables_path / "s3_maxser_oos_returns.csv")
     print(f"  Saved maxser_oos_returns.csv")
 
     # Save weight details

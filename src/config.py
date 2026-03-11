@@ -10,8 +10,8 @@ class DateConfig:
     start: str = "1970-01"
     end: str = "2019-12"
     validation_start: str = "1987-01"
-    in_sample_end: str = "2012-12"
-    out_of_sample_start: str = "2013-01"
+    in_sample_end: str = "2014-12"
+    out_of_sample_start: str = "2015-01"
 
 
 @dataclass
@@ -110,10 +110,39 @@ class PipelineConfig:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def find_prior_output(self, filename: str, subdir: str = "tables") -> Path | None:
+        """Find a file from a prior stage, searching current run then recent runs.
+
+        When stages are run individually (separate run folders), downstream stages
+        need to find upstream outputs. Searches the current run first, then falls
+        back to the most recent run folder containing the file.
+        """
+        # Check current run folder first
+        current = self._run_base() / subdir / filename
+        if current.exists():
+            return current
+
+        # Search recent run folders (newest first)
+        outputs_dir = self.project_root / "outputs"
+        if not outputs_dir.exists():
+            return None
+        for run_dir in sorted(outputs_dir.glob("run_*"), reverse=True):
+            candidate = run_dir / subdir / filename
+            if candidate.exists():
+                return candidate
+
+        return None
+
 
 def load_config(config_path: Optional[str] = None, project_root: Optional[str] = None) -> PipelineConfig:
     if config_path is None:
-        return PipelineConfig()
+        from datetime import datetime
+        config = PipelineConfig()
+        run_id = os.environ.get("PIPELINE_RUN_ID", "")
+        if not run_id:
+            run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        config.output.run_id = run_id
+        return config
 
     with open(config_path) as f:
         raw = yaml.safe_load(f)
@@ -137,9 +166,12 @@ def load_config(config_path: Optional[str] = None, project_root: Optional[str] =
     if project_root:
         config.project_root = Path(project_root)
 
-    # Pick up timestamped run ID from environment (set by run_all_stages.py)
+    # Pick up timestamped run ID from environment (set by run_all_stages.py),
+    # or create a new timestamped run folder for this invocation
+    from datetime import datetime
     run_id = os.environ.get("PIPELINE_RUN_ID", "")
-    if run_id:
-        config.output.run_id = run_id
+    if not run_id:
+        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    config.output.run_id = run_id
 
     return config

@@ -50,7 +50,8 @@ def black_litterman_posterior(
     # Posterior mean
     mu_bar = posterior_cov @ (tau_sigma_inv @ pi + P.T @ omega_inv @ Q)
 
-    # Combined covariance for optimization
+    # Combined covariance: Σ̄ = Σ + M⁻¹ (He & Litterman 1999, Eq. 9)
+    # Asset covariance + estimation uncertainty from posterior
     sigma_bar = sigma + posterior_cov
 
     # Optimal weights

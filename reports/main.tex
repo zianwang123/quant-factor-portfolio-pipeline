@@ -38,7 +38,7 @@
 \maketitle
 
 \begin{abstract}
-We build an end-to-end quantitative factor investment pipeline that constructs 20 cross-sectional equity factors from Compustat/CRSP data (1970--2019), selects a parsimonious subset via four complementary methods, and allocates across factor portfolios using mean-variance optimization, risk parity, and Black-Litterman posterior returns. Out-of-sample (2015--2019), our best variant (IC-Weighted) achieves a Sharpe ratio of 1.31 on a market-neutral basis, compared to 0.91 for the S\&P~500 and 0.56 for a hedge fund index composite. Rolling backtests with transaction costs confirm robustness: equal-weight and risk parity strategies maintain Sharpe ratios above 1.1 net of 10~bps costs. Black-Litterman improves both MVO and Max Sharpe by regularizing extreme weights, while adaptive annual factor re-selection underperforms fixed selection---demonstrating the cost of factor chasing.
+We build an end-to-end quantitative factor investment pipeline that constructs 20 cross-sectional equity factors from Compustat/CRSP data (1970--2019), selects a parsimonious subset via four complementary methods, and allocates across factor portfolios using mean-variance optimization, risk parity, Black-Litterman posterior returns, and MAXSER sparse regression for joint factor+stock portfolios. Out-of-sample (2015--2019), all nine portfolio variants achieve Sharpe ratios above 0.93, with Equal Weight reaching 1.20 on a market-neutral basis, compared to 0.91 for the S\&P~500 and 0.56 for a hedge fund index composite. MAXSER factor+stock variants achieve Sharpe ratios of 1.13 with 14.7\% annualized returns. Rolling backtests with 10~bps transaction costs confirm robustness: Equal Weight maintains a net Sharpe of 1.23 with only 5\% turnover. Black-Litterman improves MVO's net Sharpe from 0.85 to 1.09 while halving turnover, while adaptive annual factor re-selection underperforms fixed selection across all strategies---demonstrating the cost of factor chasing.
 \end{abstract}
 
 \tableofcontents
@@ -280,12 +280,49 @@ where $\boldsymbol{\pi} = \delta\boldsymbol{\Sigma}\mathbf{w}_{\text{eq}}$ is th
 
 This yields two additional variants: \textbf{MVO + BL} and \textbf{Max Sharpe + BL}.
 
+\subsection{Factor+Stock Portfolios (MAXSER)}
+
+In addition to factor-only allocation, we construct \textbf{factor+stock portfolios} that combine factor QSpread weights with stock-level idiosyncratic alpha using the MAXSER framework of \citet{ao2019approaching}, which estimates the maximum squared Sharpe ratio via sparse regression (Lasso and Ridge variants). Stock subpool selection uses idiosyncratic information ratio (residual alpha per unit residual risk after projecting out factor exposures). We exclude plug-in optimizers (MVO, Max Sharpe, IC-Weighted) applied directly to the joint $[K \text{ factors} + N \text{ stocks}]$ universe because factors are portfolios of stocks---optimizing over both double-counts exposure and inflates effective leverage.
+
+\subsection{Portfolio Variant Space}
+
+The full combinatorial space follows a four-level decision tree:
+\begin{enumerate}[noitemsep]
+    \item \textbf{Asset universe}: factor-only ($K=5$) or factor+stocks ($K + N$)
+    \item \textbf{Optimizer}: Equal Weight, IC-Weighted, MVO, Max Sharpe, or Risk Parity
+    \item \textbf{Return estimation}: raw sample $\boldsymbol{\mu}$ or BL posterior $\bar{\boldsymbol{\mu}}$
+    \item \textbf{Estimation method} (factor+stocks only): MAXSER (Lasso/Ridge)
+\end{enumerate}
+
+This yields $5 \times 2 = 10$ factor-only and $5 \times 2 \times 2 = 20$ factor+stock combinations, for 30 theoretical variants. We implement 9 and exclude 21 for principled reasons (Table~\ref{tab:exclusions}).
+
+\begin{table}[H]
+\centering
+\caption{Excluded Portfolio Combinations and Rationale}
+\label{tab:exclusions}
+\small
+\begin{tabular}{p{4.5cm}p{10cm}}
+\toprule
+\textbf{Excluded Combo} & \textbf{Reason} \\
+\midrule
+EW + BL (factor-only) & Equal weight assigns $1/K$ regardless of returns---BL posterior $\bar{\boldsymbol{\mu}}$ has no effect on the allocation. \\
+IC-Weighted + BL (all) & IC weights derive from rank correlation magnitude, not expected returns---BL adjusts $\boldsymbol{\mu}$ but IC-Weighted does not use $\boldsymbol{\mu}$. \\
+Risk Parity + BL (all) & Risk Parity uses only $\boldsymbol{\Sigma}$, never $\boldsymbol{\mu}$. While BL does produce a posterior $\boldsymbol{\Sigma}$, the shift is small ($\tau\boldsymbol{\Sigma}$ adjustment) and Risk Parity's purpose is to avoid return estimation entirely. \\
+EW (factor+stocks) & Assigning $1/(K+N)$ across ${\sim}279$ assets gives each stock ${\sim}0.4\%$ weight, drowning factor signal in stock-level noise. \\
+Risk Parity (factor+stocks) & Same issue: hundreds of stocks dominate the risk budget over 5 factors. \\
+Plug-in F+S (MVO, MaxSharpe, IC-Weighted) & Factors are portfolios of stocks---optimizing over both in a joint $[K+N]$ universe double-counts exposure and inflates effective leverage. MAXSER avoids this via its own sparse regression framework. \\
+MAXSER + BL & MAXSER includes its own shrinkage via Lasso/Ridge regularization on the squared Sharpe estimator. Layering BL posterior returns would double-regularize and conflate two estimation frameworks. \\
+MAXSER + specific optimizer & MAXSER \textit{is} its own optimizer (maximizes $\hat{\theta}^2 = \boldsymbol{\mu}'\boldsymbol{\Sigma}^{-1}\boldsymbol{\mu}$ via sparse regression)---it replaces MVO/Max Sharpe rather than composing with them. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 % ═══════════════════════════════════════════════════════════════
 \section{Out-of-Sample Results}
 \label{sec:results}
 % ═══════════════════════════════════════════════════════════════
 
-Table~\ref{tab:oos} reports OOS performance (January 2015 -- December 2019) for all portfolio variants and benchmarks.
+Table~\ref{tab:oos} reports OOS performance (January 2015 -- December 2019) for all portfolio variants and benchmarks. Our factor-only portfolios are market-neutral long-short (long Q1, short Q5 within S\&P~500), so absolute returns reflect pure cross-sectional alpha with zero market beta. MAXSER factor+stock variants combine factor QSpreads with stock-level idiosyncratic alpha via sparse regression, producing higher absolute returns with commensurately higher volatility.
 
 \begin{table}[H]
 \centering
@@ -297,22 +334,30 @@ Table~\ref{tab:oos} reports OOS performance (January 2015 -- December 2019) for 
 \toprule
 \textbf{Portfolio} & \textbf{Sharpe} & \textbf{Sortino} & \textbf{Ann.\ Ret.} & \textbf{Ann.\ Vol} & \textbf{Max DD} & \textbf{VaR\textsubscript{95}} & \textbf{CF-VaR\textsubscript{95}} \\
 \midrule
-\multicolumn{8}{l}{\textit{Our Portfolios}} \\
-IC-Weighted     & \textbf{1.311} & 2.740 & 4.3\%  & 3.3\%  & $-$1.9\%  & $-$1.2\% & $-$1.2\% \\
-MVO + BL        & 1.242          & 2.632 & 5.7\%  & 4.6\%  & $-$4.5\%  & $-$1.5\% & $-$1.6\% \\
-Equal Weight    & 1.201          & 2.109 & 3.7\%  & 3.1\%  & $-$3.2\%  & $-$1.2\% & $-$1.2\% \\
-MVO             & 1.164          & 2.159 & 8.5\%  & 7.3\%  & $-$7.5\%  & $-$2.5\% & $-$2.6\% \\
-Max Sharpe + BL & 1.157          & 2.142 & 7.5\%  & 6.5\%  & $-$7.4\%  & $-$2.4\% & $-$2.2\% \\
-Max Sharpe      & 1.082          & 1.994 & 10.0\% & 9.3\%  & $-$10.4\% & $-$3.4\% & $-$3.3\% \\
-Risk Parity     & 1.005          & 1.713 & 3.0\%  & 3.0\%  & $-$3.0\%  & $-$1.2\% & $-$1.2\% \\
+\multicolumn{8}{l}{\textit{Our Portfolios --- Factor-Only (market-neutral long-short)}} \\
+Equal Weight    & \textbf{1.203} & 2.464 & 3.9\%  & 3.2\%  & $-$3.3\%  & $-$1.1\% & $-$1.2\% \\
+IC-Weighted     & 1.122          & 2.298 & 3.9\%  & 3.5\%  & $-$2.2\%  & $-$1.1\% & $-$1.2\% \\
+MVO + BL        & 1.114          & 2.062 & 5.5\%  & 4.9\%  & $-$5.1\%  & $-$1.6\% & $-$1.7\% \\
+MVO             & 1.038          & 1.861 & 8.0\%  & 7.7\%  & $-$8.3\%  & $-$2.9\% & $-$2.7\% \\
+Max Sharpe + BL & 1.023          & 1.778 & 7.8\%  & 7.7\%  & $-$9.4\%  & $-$2.8\% & $-$2.6\% \\
+Risk Parity     & 0.998          & 1.814 & 3.1\%  & 3.1\%  & $-$2.8\%  & $-$1.2\% & $-$1.2\% \\
+Max Sharpe      & 0.938          & 1.661 & 10.0\% & 10.6\% & $-$12.8\% & $-$4.3\% & $-$3.7\% \\
+\midrule
+\multicolumn{8}{l}{\textit{Our Portfolios --- Factor+Stock (MAXSER)}} \\
+MAXSER-Lasso    & 1.129          & 2.049 & 14.7\% & 13.0\% & $-$13.8\% & $-$4.8\% & $-$4.7\% \\
+MAXSER-Ridge    & 1.125          & 2.213 & 14.6\% & 13.0\% & $-$13.2\% & $-$4.8\% & $-$4.3\% \\
 \midrule
 \multicolumn{8}{l}{\textit{Benchmarks}} \\
 HFRIMAI (Best HF)  & 1.358 & 2.371 & 3.2\%  & 2.4\%  & $-$2.4\%  & $-$1.0\% & $-$1.0\% \\
 Mutual Fund (EW)   & 0.947 & 1.357 & 16.4\% & 17.4\% & $-$21.1\% & $-$6.3\% & $-$6.7\% \\
-S\&P 500           & 0.907 & 1.219 & 10.8\% & 12.0\% & $-$14.1\% & $-$6.0\% & $-$5.2\% \\
-FF Mkt-RF          & 0.857 & 1.103 & 10.7\% & 12.5\% & $-$15.1\% & $-$6.1\% & $-$5.5\% \\
-Smart Beta (EW)    & 0.744 & 0.925 & 8.9\%  & 11.9\% & $-$16.4\% & $-$5.5\% & $-$5.3\% \\
+Mutual Fund (FSMEX)& 0.919 & 1.465 & 19.0\% & 20.7\% & $-$17.1\% & $-$8.8\% & $-$8.2\% \\
+S\&P 500           & 0.907 & 1.219 & 10.8\% & 11.9\% & $-$14.1\% & $-$6.0\% & $-$5.2\% \\
+FF Mkt-RF          & 0.857 & 1.103 & 10.7\% & 12.4\% & $-$15.1\% & $-$6.1\% & $-$5.5\% \\
+Smart Beta (PSL)   & 0.818 & 1.059 & 8.0\%  & 9.8\%  & $-$10.6\% & $-$4.0\% & $-$4.6\% \\
+Smart Beta (EW)    & 0.744 & 0.925 & 8.9\%  & 11.9\% & $-$16.4\% & $-$5.4\% & $-$5.3\% \\
 HF Index (EW)      & 0.562 & 0.707 & 2.0\%  & 3.6\%  & $-$7.8\%  & $-$1.8\% & $-$1.7\% \\
+FF Momentum (UMD)  & 0.201 & 0.351 & 2.6\%  & 13.2\% & $-$21.3\% & $-$6.3\% & $-$5.9\% \\
+FF SMB             & $-$0.257 & $-$0.547 & $-$2.2\% & 8.6\% & $-$17.2\% & $-$3.6\% & $-$4.0\% \\
 FF HML             & $-$0.472 & $-$0.968 & $-$4.3\% & 9.0\% & $-$30.1\% & $-$3.9\% & $-$3.8\% \\
 \bottomrule
 \end{tabular}}
@@ -320,10 +365,11 @@ FF HML             & $-$0.472 & $-$0.968 & $-$4.3\% & 9.0\% & $-$30.1\% & $-$3.9
 
 \textbf{Key observations:}
 \begin{itemize}[noitemsep]
-    \item All seven of our variants achieve Sharpe $> 1.0$, outperforming the S\&P~500 (0.91) on a risk-adjusted basis.
-    \item Our portfolios are market-neutral (long-short QSpreads), so absolute returns are lower than fully invested benchmarks, but drawdowns are substantially smaller.
-    \item IC-Weighted (Sharpe 1.31) is the simplest and best-performing variant. This echoes the finding that simple, robust allocations often beat optimized ones out of sample.
-    \item MVO + BL (Sharpe 1.24) outperforms plain MVO (1.16), showing that BL regularization helps by shrinking returns toward equilibrium.
+    \item All nine variants achieve Sharpe $\geq 0.94$, with eight exceeding the S\&P~500 (0.91) on a risk-adjusted basis. Only HFRIMAI---a low-volatility hedge fund sub-strategy index---beats our best variant.
+    \item \textbf{Market neutrality explains low absolute returns.} Factor-only portfolios earn 3--10\% annually from pure cross-sectional alpha with zero beta. The S\&P~500's 10.8\% is mostly equity risk premium. Our max drawdowns (2--13\%) are 2--5$\times$ smaller than benchmarks (14--21\%).
+    \item \textbf{Simple allocations are hard to beat}: Equal Weight (Sharpe 1.20) outperforms all optimized variants, echoing \citet{demiguel2009optimal}. IC-Weighted (1.12) and MVO+BL (1.11) follow.
+    \item \textbf{MAXSER captures idiosyncratic alpha}: MAXSER-Lasso (Sharpe 1.13, return 14.7\%) and MAXSER-Ridge (1.13, 14.6\%) achieve the highest absolute returns by combining factor allocation with stock-level residual alpha from 50 selected stocks.
+    \item MVO + BL (Sharpe 1.11) outperforms plain MVO (1.04), showing that BL regularization helps by shrinking returns toward equilibrium.
     \item The Fama-French value factor (HML) has a \textit{negative} Sharpe ($-$0.47) during 2015--2019, highlighting the ``value winter'' that plagued traditional value strategies.
 \end{itemize}
 
@@ -337,7 +383,7 @@ where $S$ is skewness, $K$ is kurtosis, and $z_\alpha$ is the standard normal qu
 
 \subsection{Sharpe Ratio Equality Tests}
 
-We test whether our portfolios statistically outperform benchmarks using the Jobson-Korkie test with Memmel correction. For IC-Weighted vs S\&P~500, the difference in Sharpe ratios (1.31 vs 0.91) is economically meaningful, though statistical significance depends on the short OOS window (60 months).
+We test whether our portfolios statistically outperform benchmarks using the Jobson-Korkie test with Memmel correction. For Equal Weight vs S\&P~500, the difference in Sharpe ratios (1.20 vs 0.91) is economically meaningful, though statistical significance depends on the short OOS window (60 months). The test has low power with $T=60$ monthly observations---a longer OOS period or bootstrap confidence intervals would strengthen inference.
 
 % ═══════════════════════════════════════════════════════════════
 \section{Black-Litterman Analysis}
@@ -389,24 +435,25 @@ Static optimization on a single IS/OOS split can overstate performance. We run a
 \textbf{Strategy} & \textbf{Gross} & \textbf{Net} & \textbf{Ann.\ Ret.} & \textbf{Max DD} & \textbf{Turnover} & \textbf{Cost} \\
  & \textbf{Sharpe} & \textbf{Sharpe} & \textbf{(Net)} & \textbf{(Net)} & \textbf{(Avg)} & \textbf{(bps)} \\
 \midrule
-Equal Weight      & 1.188 & \textbf{1.184} & 3.6\% & $-$3.1\% & 4.9\%  & 55  \\
-Risk Parity       & 1.149 & 1.143          & 3.3\% & $-$2.7\% & 5.5\%  & 60  \\
-Max Sharpe + BL   & 0.939 & 0.913          & 4.2\% & $-$6.0\% & 38.1\% & 423 \\
-MVO + BL          & 0.919 & 0.892          & 4.6\% & $-$7.1\% & 27.7\% & 307 \\
-Max Sharpe        & 0.838 & 0.808          & 4.8\% & $-$6.5\% & 47.3\% & 525 \\
-IC-Weighted       & 0.744 & 0.718          & 3.2\% & $-$9.4\% & 18.7\% & 207 \\
-MVO               & 0.720 & 0.691          & 6.4\% & $-$13.6\%& 55.4\% & 615 \\
-IC-Wt + BL        & 0.714 & 0.688          & 3.2\% & $-$8.4\% & 18.3\% & 203 \\
+Equal Weight      & 1.235 & \textbf{1.231} & 3.9\% & $-$3.2\% & 5.0\%  & 55  \\
+Risk Parity       & 1.153 & 1.148          & 3.5\% & $-$3.1\% & 5.6\%  & 62  \\
+MVO + BL          & 1.116 & 1.087          & 5.7\% & $-$6.4\% & 27.0\% & 300 \\
+IC-Wt + BL        & 0.915 & 0.891          & 4.0\% & $-$7.8\% & 18.2\% & 202 \\
+Max Sharpe + BL   & 0.894 & 0.865          & 5.6\% & $-$4.4\% & 44.1\% & 490 \\
+MVO               & 0.886 & 0.853          & 8.1\% & $-$13.3\%& 56.4\% & 626 \\
+IC-Weighted       & 0.784 & 0.756          & 3.5\% & $-$9.0\% & 19.3\% & 214 \\
+Max Sharpe        & 0.786 & 0.749          & 5.9\% & $-$7.4\% & 56.1\% & 622 \\
 \bottomrule
 \end{tabular}}
 \end{table}
 
 \textbf{Key findings:}
 \begin{itemize}[noitemsep]
-    \item Equal Weight and Risk Parity are the most robust---low turnover ($< 6\%$) translates to minimal transaction cost drag ($\sim$55--60 bps total over the backtest).
-    \item \textbf{BL improves MVO}: Net Sharpe rises from 0.69 to 0.89, while turnover drops from 55\% to 28\%. BL shrinks extreme MVO weights toward equilibrium, acting as a natural regularizer.
-    \item \textbf{BL improves Max Sharpe}: Net Sharpe rises from 0.81 to 0.91, turnover drops from 47\% to 38\%.
-    \item MVO without BL has the highest turnover (55\%) and cost (615 bps), consistent with the known instability of unconstrained mean-variance portfolios.
+    \item Equal Weight and Risk Parity are the most robust---low turnover ($< 6\%$) translates to minimal transaction cost drag ($\sim$55--62 bps total over the backtest). Equal Weight's net Sharpe (1.23) barely deteriorates from gross (1.24).
+    \item \textbf{BL improves MVO}: Net Sharpe rises from 0.85 to 1.09 (+0.23), while turnover drops from 56\% to 27\%. BL shrinks extreme MVO weights toward equilibrium, acting as a natural regularizer.
+    \item \textbf{BL improves Max Sharpe}: Net Sharpe rises from 0.75 to 0.87 (+0.12), turnover drops from 56\% to 44\%.
+    \item \textbf{BL improves IC-Weighted}: Net Sharpe rises from 0.76 to 0.89 (+0.14), with slight turnover reduction.
+    \item MVO without BL has the highest turnover (56\%) and cost (626 bps), consistent with the known instability of unconstrained mean-variance portfolios.
 \end{itemize}
 
 \subsection{BL as a Regularizer}
@@ -427,14 +474,14 @@ Table~\ref{tab:bl_comparison} isolates the BL effect for each optimizer:
 \toprule
 \textbf{Optimizer} & \textbf{Base Sharpe} & \textbf{BL Sharpe} & \textbf{$\Delta$ Sharpe} & \textbf{Turnover Reduction} \\
 \midrule
-MVO         & 0.691 & 0.892 & +0.200 & 55.4\% $\to$ 27.7\% \\
-Max Sharpe  & 0.808 & 0.913 & +0.105 & 47.3\% $\to$ 38.1\% \\
-IC-Weighted & 0.718 & 0.688 & $-$0.030 & 18.7\% $\to$ 18.3\% \\
+MVO         & 0.853 & 1.087 & +0.234 & 56.4\% $\to$ 27.0\% \\
+Max Sharpe  & 0.749 & 0.865 & +0.116 & 56.1\% $\to$ 44.1\% \\
+IC-Weighted & 0.756 & 0.891 & +0.135 & 19.3\% $\to$ 18.2\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-BL benefits optimizers that are sensitive to return estimation (MVO, Max Sharpe) but offers no improvement for IC-Weighted, which already uses a simple, robust weighting scheme.
+BL benefits all three optimizers, with the largest improvement for MVO (+0.23 Sharpe, turnover halved). The mechanism is return shrinkage: BL posterior returns are a precision-weighted average of the equilibrium prior and data-driven views, dampening the extreme expected returns that drive MVO instability.
 
 \subsection{Adaptive Factor Re-Selection}
 
@@ -449,9 +496,9 @@ We test whether annually re-selecting factors from the full 20-factor universe (
 \toprule
 \textbf{Strategy} & \textbf{Fixed Sharpe} & \textbf{Adaptive Sharpe} & \textbf{Factor Changes} & \textbf{Adaptive Cost} \\
 \midrule
-Equal Weight  & 1.184 & 0.727 & 3 & 37 bps \\
-IC-Weighted   & 0.718 & 0.619 & 3 & 60 bps \\
-MVO + BL      & 0.892 & 0.580 & 3 & 103 bps \\
+Equal Weight  & 1.231 & 0.727 & 3 & 37 bps \\
+IC-Weighted   & 0.756 & 0.619 & 3 & 60 bps \\
+MVO + BL      & 1.087 & 0.580 & 3 & 103 bps \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -472,7 +519,7 @@ This result supports the practice of selecting factors based on long-term econom
 
 \subsection{Drawdown Analysis}
 
-Our market-neutral portfolios exhibit substantially lower drawdowns than long-only benchmarks. IC-Weighted's maximum drawdown is 1.9\%, compared to 14.1\% for the S\&P~500 and 21.1\% for the equal-weight mutual fund basket. This is a direct consequence of market neutrality: our returns are driven by cross-sectional dispersion rather than market direction.
+Our market-neutral portfolios exhibit substantially lower drawdowns than long-only benchmarks. Equal Weight's maximum drawdown is 3.3\% and IC-Weighted's is 2.2\%, compared to 14.1\% for the S\&P~500 and 21.1\% for the equal-weight mutual fund basket. This is a direct consequence of market neutrality: our returns are driven by cross-sectional dispersion rather than market direction. MAXSER variants have higher drawdowns (13--14\%) due to stock-level exposure, but remain comparable to or below the S\&P~500.
 
 \subsection{Tail Risk}
 
@@ -485,21 +532,28 @@ Table~\ref{tab:oos} includes both historical VaR$_{95}$ and Cornish-Fisher VaR$_
 We present a complete, reproducible pipeline for cross-sectional factor investing that takes raw data as input and produces optimized, backtested portfolios as output. Our main findings:
 
 \begin{enumerate}
-    \item \textbf{Five robust factors} (AccrualRatio, CFTP, STReversal, AssetGrowth, ROE) survive multi-method selection and deliver consistent OOS alpha.
+    \item \textbf{Five robust factors} (AccrualRatio, CFTP, STReversal, AssetGrowth, ROE) survive multi-method selection and deliver consistent OOS alpha. All nine portfolio variants beat the S\&P~500 on risk-adjusted terms (Sharpe $\geq 0.94$ vs 0.91).
 
-    \item \textbf{Simple allocations are hard to beat}: IC-Weighted (Sharpe 1.31) and Equal Weight (1.20) outperform sophisticated optimization in the static OOS test; Equal Weight (1.18) dominates in the rolling backtest after costs.
+    \item \textbf{Simple allocations are hard to beat}: Equal Weight (Sharpe 1.20) outperforms all optimized factor-only variants in the static OOS test and dominates in the rolling backtest after costs (net Sharpe 1.23). This echoes \citet{demiguel2009optimal}.
 
-    \item \textbf{Black-Litterman regularizes optimization}: BL improves MVO's net Sharpe by +0.20 and reduces turnover by half, demonstrating its value as a return shrinkage estimator rather than a standalone allocation method.
+    \item \textbf{MAXSER captures idiosyncratic alpha}: Factor+stock portfolios via MAXSER sparse regression (Sharpe 1.13, 14.7\% return) achieve the highest absolute returns by combining factor allocation with stock-level residual alpha, without the double-counting problem of plug-in optimizers.
 
-    \item \textbf{Factor stability matters}: Fixed factor selection outperforms annual adaptive re-selection, supporting the use of economically motivated, stable factor portfolios over data-mined alternatives.
+    \item \textbf{Black-Litterman regularizes optimization}: BL improves MVO's net Sharpe by +0.23 and reduces turnover from 56\% to 27\%, demonstrating its value as a return shrinkage estimator. BL also improves Max Sharpe (+0.12) and IC-Weighted (+0.14).
 
-    \item \textbf{Transaction costs are material}: MVO's gross Sharpe of 0.72 falls to 0.69 net of costs; more aggressive strategies like Max Sharpe lose 3--5\% of annualized return to turnover.
+    \item \textbf{Factor stability matters}: Fixed factor selection outperforms annual adaptive re-selection across all strategies (EW: 1.23 vs 0.73), supporting the use of economically motivated, stable factor portfolios over data-mined alternatives.
+
+    \item \textbf{Transaction costs are material}: MVO's gross Sharpe of 0.89 falls to 0.85 net of 626 bps total cost from 56\% average turnover. Equal Weight loses only 55 bps total. Net alpha after costs is all that matters.
 \end{enumerate}
 
 The code, data pipeline, and all results are available at:\\ \url{https://github.com/zianwang123/quant-factor-portfolio-pipeline}.
 
 % ═══════════════════════════════════════════════════════════════
 \begin{thebibliography}{99}
+
+\bibitem[Ao et~al.(2019)]{ao2019approaching}
+Ao, M., Li, Y., and Zheng, X. (2019).
+\newblock Approaching mean-variance efficiency for large portfolios.
+\newblock \textit{The Review of Financial Studies}, 32(7):2890--2919.
 
 \bibitem[Carhart(1997)]{carhart1997persistence}
 Carhart, M.~M. (1997).

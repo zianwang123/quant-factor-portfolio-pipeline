@@ -6,17 +6,26 @@ def compute_ic_series(
     factor: pd.DataFrame,
     returns: pd.DataFrame,
     is_sp500: pd.DataFrame,
+    end_date: str = None,
 ) -> pd.Series:
     """Compute monthly Information Coefficient (rank correlation) for a factor.
 
     IC_t = Spearman correlation between factor exposures at t and returns at t+1,
     computed cross-sectionally across S&P 500 members.
 
+    Args:
+        end_date: If provided, only use factor dates up to this period (inclusive)
+                  to avoid look-ahead bias.
+
     Avoids pandas Index.intersection() which segfaults on Windows + Python 3.12.
     """
     ic_values = {}
 
-    for t in factor.index:
+    dates = factor.index
+    if end_date is not None:
+        dates = dates[dates <= pd.Period(end_date, "M")]
+
+    for t in dates:
         t_plus_1 = t + 1
         if t_plus_1 not in returns.index:
             continue
@@ -76,6 +85,7 @@ def ic_decay_analysis(
     returns: pd.DataFrame,
     is_sp500: pd.DataFrame,
     max_lag: int = 12,
+    end_date: str = None,
 ) -> pd.DataFrame:
     """Compute IC at different holding horizons to measure signal persistence."""
     decay = {}
@@ -84,7 +94,8 @@ def ic_decay_analysis(
         # compute_ic_series internally uses t+1 returns, so shift by (lag-1)
         # to get IC at horizon t+lag
         shifted_returns = returns.shift(-(lag - 1))
-        ic_series = compute_ic_series(factor, shifted_returns, is_sp500)
+        ic_series = compute_ic_series(factor, shifted_returns, is_sp500,
+                                       end_date=end_date)
         summary = ic_summary(ic_series)
         if summary:
             decay[lag] = {

@@ -77,9 +77,9 @@ def run_stage_2(config_path: str = None, factors: dict = None, qspreads: dict = 
 
     # Load QSpreads from Stage 1 CSV if available
     if qspreads is None:
-        qspreads_csv = tables_path / "factor_qspreads.csv"
-        if qspreads_csv.exists():
-            _flush("  Loading QSpreads from Stage 1 CSV...")
+        qspreads_csv = config.find_prior_output("factor_qspreads.csv")
+        if qspreads_csv is not None:
+            _flush(f"  Loading QSpreads from {qspreads_csv.parent.parent.name}...")
             qs_df = pd.read_csv(qspreads_csv, index_col=0)
             qs_df.index = pd.PeriodIndex(qs_df.index, freq="M")
             qspreads = {col: qs_df[col] for col in qs_df.columns}

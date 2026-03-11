@@ -57,19 +57,22 @@ class FactorSelector:
     ) -> dict:
         """Run all selection methods and return combined results."""
         factor_names = list(factor_exposures.keys())
+        is_end = self.config.dates.in_sample_end
 
-        # 1. Fama-MacBeth
+        # 1. Fama-MacBeth (IS only to avoid look-ahead bias)
         print("Running Fama-MacBeth regressions...")
         fm_results = fama_macbeth_regression(
             returns, factor_exposures, is_sp500,
             nw_lags=self.config.selection.fama_macbeth_nw_lags,
+            end_date=is_end,
         )
 
-        # 2. IC Analysis
+        # 2. IC Analysis (IS only to avoid look-ahead bias)
         print("Computing Information Coefficients...")
         ic_results = {}
         for name in factor_names:
-            ic_series = compute_ic_series(factor_exposures[name], returns, is_sp500)
+            ic_series = compute_ic_series(factor_exposures[name], returns, is_sp500,
+                                          end_date=is_end)
             ic_results[name] = ic_summary(ic_series)
             ic_results[name]["ic_series"] = ic_series
 
@@ -82,6 +85,7 @@ class FactorSelector:
             returns, factor_exposures, is_sp500,
             n_folds=self.config.selection.lasso_cv_folds,
             n_alphas=self.config.selection.lasso_alphas,
+            test_start=self.config.dates.in_sample_end,
         )
 
         # 4. Consensus scoring
@@ -143,12 +147,14 @@ class FactorSelector:
         min_factors = cfg.min_factors
         max_corr = cfg.max_pairwise_corr
 
-        # Build QSpread correlation matrix if available
+        # Build QSpread correlation matrix if available (IS only)
         corr_matrix = None
         if qspreads:
+            is_end = self.config.dates.in_sample_end
             valid_spreads = {k: v.dropna() for k, v in qspreads.items() if len(v.dropna()) > 10}
             if len(valid_spreads) > 1:
                 spread_df = pd.DataFrame(valid_spreads)
+                spread_df = spread_df.loc[:is_end]
                 corr_matrix = spread_df.corr()
 
         # Candidates sorted by score
@@ -165,19 +171,17 @@ class FactorSelector:
 
             # Check pairwise correlation constraint
             if corr_matrix is not None and len(selected) > 0:
-                too_correlated = False
-                for existing in selected:
-                    if name in corr_matrix.columns and existing in corr_matrix.columns:
-                        pair_corr = abs(corr_matrix.loc[name, existing])
-                        if pair_corr > max_corr:
-                            too_correlated = True
-                            break
-                if too_correlated:
+                max_pair_corr = 0.0
+                if name in corr_matrix.columns:
+                    for existing in selected:
+                        if existing in corr_matrix.columns:
+                            max_pair_corr = max(max_pair_corr, abs(corr_matrix.loc[name, existing]))
+                if max_pair_corr > max_corr:
                     # If we haven't met minimum, relax constraint slightly
                     if len(selected) >= min_factors:
                         continue
-                    # Below minimum: allow if corr < 0.8 (relaxed threshold)
-                    if pair_corr > 0.8:
+                    # Below minimum: allow if max corr < 0.8 (relaxed threshold)
+                    if max_pair_corr > 0.8:
                         continue
 
             # Category diversification: prefer new categories

@@ -85,7 +85,7 @@ def lasso_factor_selection(
     X_scaled = scaler.fit_transform(X_pooled)
 
     # LASSO with cross-validation
-    lasso = LassoCV(n_alphas=n_alphas, cv=n_folds, random_state=42, max_iter=10000)
+    lasso = LassoCV(alphas=n_alphas, cv=n_folds, random_state=42, max_iter=10000)
     lasso.fit(X_scaled, y_pooled)
 
     coefficients = dict(zip(factor_names, lasso.coef_))

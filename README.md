@@ -4,26 +4,67 @@ End-to-end quantitative factor investment pipeline: from alpha discovery through
 
 > **Note**: This is an enhanced independent research project originally developed from group coursework in RSM6308 (factor investing, portfolio optimization, and Black-Litterman allocation). The original course projects covered basic factor construction, simple portfolio optimization, and introductory Black-Litterman — this repo significantly extends and rewrites those foundations with a full rolling backtest framework, transaction cost modeling, adaptive factor re-selection, BL as a return estimator across multiple optimizers, Cornish-Fisher VaR, and comprehensive visualization. **This project may contain errors** — it is intended for educational and research purposes only. See [Disclaimer](#disclaimer) below.
 
-## Key Results (OOS: 2015–2019)
+## Key Results (OOS: Jan 2015 – Dec 2019)
 
-| Portfolio | Sharpe | Ann. Return | Ann. Vol | Max DD |
-|-----------|--------|-------------|----------|--------|
-| Our: IC-Weighted | **1.311** | 4.3% | 3.3% | -1.9% |
-| Our: MVO + BL | **1.242** | 5.7% | 4.6% | -4.5% |
-| Our: Equal Weight | **1.201** | 3.7% | 3.1% | -3.2% |
-| S&P 500 | 0.907 | 10.8% | 12.0% | -14.1% |
-| Hedge Fund Index (EW) | 0.562 | 2.0% | 3.6% | -7.8% |
+### Static OOS Performance (IS: 1987–2014, OOS: 2015–2019)
 
-Our portfolios are **market-neutral long-short** (factor QSpreads), so lower absolute returns but superior risk-adjusted performance vs the S&P 500 and hedge fund benchmarks.
+| Portfolio | Sharpe | Sortino | Ann. Return | Ann. Vol | Max DD | CF-VaR 95% |
+|-----------|--------|---------|-------------|----------|--------|------------|
+| HF Index Best (HFRIMAI) | 1.358 | 2.371 | 3.2% | 2.4% | -2.4% | -1.0% |
+| **Our: Equal Weight** | **1.203** | 2.464 | 3.9% | 3.2% | -3.3% | -1.2% |
+| **Our: MAXSER-Lasso (F+S)** | **1.129** | 2.049 | 14.7% | 13.0% | -13.8% | -4.7% |
+| **Our: MAXSER-Ridge (F+S)** | **1.125** | 2.213 | 14.6% | 13.0% | -13.2% | -4.3% |
+| **Our: IC-Weighted** | **1.122** | 2.298 | 3.9% | 3.5% | -2.2% | -1.2% |
+| **Our: MVO + BL** | **1.114** | 2.062 | 5.5% | 4.9% | -5.1% | -1.7% |
+| **Our: MVO** | **1.038** | 1.861 | 8.0% | 7.7% | -8.3% | -2.7% |
+| **Our: Max Sharpe + BL** | **1.023** | 1.778 | 7.8% | 7.7% | -9.4% | -2.6% |
+| **Our: Risk Parity** | **0.998** | 1.814 | 3.1% | 3.1% | -2.8% | -1.2% |
+| Mutual Fund (EW) | 0.947 | 1.357 | 16.4% | 17.4% | -21.1% | -6.7% |
+| **Our: Max Sharpe** | **0.938** | 1.661 | 10.0% | 10.6% | -12.8% | -3.7% |
+| Mutual Fund Best (FSMEX) | 0.919 | 1.465 | 19.0% | 20.7% | -17.1% | -8.2% |
+| S&P 500 | 0.907 | 1.219 | 10.8% | 11.9% | -14.1% | -5.2% |
+| FF Mkt-RF | 0.857 | 1.103 | 10.7% | 12.4% | -15.1% | -5.5% |
+| Smart Beta Best (PSL) | 0.818 | 1.059 | 8.0% | 9.8% | -10.6% | -4.6% |
+| Smart Beta (EW) | 0.744 | 0.925 | 8.9% | 11.9% | -16.4% | -5.3% |
+| HF Index (EW) | 0.562 | 0.707 | 2.0% | 3.6% | -7.8% | -1.7% |
+| FF Momentum (UMD) | 0.201 | 0.351 | 2.6% | 13.2% | -21.3% | -5.9% |
+| FF SMB | -0.257 | -0.547 | -2.2% | 8.6% | -17.2% | -4.0% |
+| FF HML | -0.472 | -0.968 | -4.3% | 9.0% | -30.1% | -3.8% |
+
+**Why are absolute returns low?** Our factor-only portfolios are **market-neutral long-short** (long Q1, short Q5 within S&P 500). They earn pure alpha with zero beta — the 3–8% returns come from cross-sectional dispersion, not market direction. The S&P 500's 10.8% is mostly equity risk premium, which our portfolios don't take. The right comparison is risk-adjusted: **8 of 9 variants beat the S&P 500 Sharpe (0.91)**, and all beat the HF Index EW (0.56).
+
+**Why do MAXSER variants have higher absolute returns?** MAXSER-Lasso/Ridge combine factor QSpreads with stock-level idiosyncratic alpha (50 selected stocks), producing portfolios with both factor and stock-specific exposure — hence higher returns (~14.7%) and higher vol (~13%).
+
+### Rolling Backtest (Net of 10 bps Transaction Costs)
+
+| Strategy | Net Sharpe | Gross Sharpe | Avg Turnover | Total Cost (bps) | Max DD |
+|----------|-----------|-------------|-------------|-----------------|--------|
+| Equal Weight | **1.231** | 1.235 | 5.0% | 55 | -3.2% |
+| Risk Parity | **1.148** | 1.153 | 5.6% | 62 | -3.1% |
+| MVO + BL | **1.087** | 1.116 | 27.0% | 300 | -6.4% |
+| IC-Weighted + BL | 0.891 | 0.915 | 18.2% | 202 | -7.8% |
+| Max Sharpe + BL | 0.865 | 0.894 | 44.1% | 490 | -4.4% |
+| MVO | 0.853 | 0.886 | 56.4% | 626 | -13.3% |
+| IC-Weighted | 0.756 | 0.784 | 19.3% | 214 | -9.0% |
+| Max Sharpe | 0.749 | 0.786 | 56.1% | 622 | -7.4% |
+
+**What happens after transaction costs?** Simple strategies dominate: Equal Weight (net Sharpe 1.23) barely loses anything to costs because turnover is only 5%. MVO loses 3.3 Sharpe points (0.886 → 0.853) from 56% turnover. This is the central tension in quant PM: more sophisticated optimization ≠ better net performance.
+
+**Does Black-Litterman help?** Yes, for optimizers sensitive to return estimation error:
+- **MVO**: BL improves net Sharpe from 0.853 to 1.087 (+0.23) and halves turnover (56% → 27%)
+- **Max Sharpe**: BL improves net Sharpe from 0.749 to 0.865 (+0.12), reduces turnover (56% → 44%)
+- **IC-Weighted**: BL improves net Sharpe from 0.756 to 0.891 (+0.14) — BL helps here by stabilizing the return estimates IC weights are applied to
+
+BL shrinks posterior returns toward the equal-weight equilibrium, dampening the extreme positions that cause MVO instability. It acts as a **return regularizer**, not a standalone allocation method.
 
 ## Pipeline Overview
 
 ```
 Stage 1: Factor Construction     → 20 factors from Compustat/CRSP, quintile sorts, benchmark validation
 Stage 2: Factor Selection        → Fama-MacBeth, IC analysis, LASSO, greedy forward selection → 5 factors
-Stage 3: Portfolio Optimization  → 7 variants (EW, IC-Wt, MVO, Max Sharpe, Risk Parity, MVO+BL, MaxSharpe+BL)
+Stage 3: Portfolio Optimization  → 9 variants (7 factor-only + 2 MAXSER factor+stock) vs 14 benchmarks
 Stage 4: Black-Litterman         → Factor-level & stock-level BL allocation, sensitivity analysis
-Stage 5: Rolling Backtest        → Monthly rebalancing, transaction costs, BL comparison, adaptive re-selection
+Stage 5: Rolling Backtest        → Monthly rebalancing, 10 bps costs, BL comparison, adaptive re-selection
 ```
 
 ### Stage 1: Factor Construction
@@ -70,6 +111,38 @@ Seven portfolio variants constructed from selected factor QSpreads:
 
 Black-Litterman variants use BL as a **return estimation method**: compute posterior expected returns from equilibrium + views (in-sample means), then feed to the optimizer.
 
+Additionally, **factor+stock portfolios** combine factor QSpread allocation with stock-level idiosyncratic alpha using MAXSER (Ao, Li, Zheng 2019) sparse regression.
+
+#### Portfolio Variant Combo Tree
+
+The full combinatorial space of portfolio variants follows this decision tree:
+
+```
+Asset Universe        Optimizer        Return Estimation    Estimation Method
+──────────────        ─────────        ─────────────────    ─────────────────
+Factor-only       ─┬─ EW           ─┬─ Raw sample mu       (MAXSER N/A:
+                   ├─ IC-Weighted   │                        only 5 assets)
+                   ├─ MVO           ├─ BL posterior mu
+                   ├─ Max Sharpe    │
+                   └─ Risk Parity  ─┘
+
+Factor+Stocks     ─── MAXSER       ─── Raw sample mu    ─┬─ Lasso
+                                                         └─ Ridge
+```
+
+This yields 5 x 2 = 10 factor-only + 5 x 2 x 2 = 20 factor+stocks = **30 theoretical combos**. We implement **9** and exclude 21 for principled reasons:
+
+| Excluded Combo | Reason |
+|---|---|
+| **EW + BL** (factor-only) | EW assigns 1/K regardless of returns -- BL posterior mu has no effect |
+| **IC-Weighted + BL** (factor-only & factor+stocks) | IC weights derive from rank correlation, not return estimates -- BL adjusts mu but IC-Weighted doesn't use mu |
+| **Risk Parity + BL** (factor-only & factor+stocks) | Risk Parity uses only the covariance matrix, never expected returns -- BL's posterior mu is irrelevant |
+| **EW (factor+stocks)** | 1/K across ~279 assets gives each stock ~0.4% weight, drowning factor signal in stock noise |
+| **Risk Parity (factor+stocks)** | Same 1/K-risk issue: hundreds of stocks dominate the risk budget over 5 factors |
+| **Plug-in F+S (MVO, MaxSharpe, IC-Weighted on [factors+stocks])** | Factors are portfolios of stocks -- optimizing over both double-counts exposure and inflates leverage. MAXSER avoids this via its own sparse regression framework |
+| **MAXSER + BL** | MAXSER has its own shrinkage/regularization (Lasso/Ridge on squared Sharpe) -- layering BL would double-regularize |
+| **MAXSER + specific optimizer** | MAXSER *is* its own optimizer (maximizes squared Sharpe via sparse regression) -- it replaces MVO/MaxSharpe, not composes with them |
+
 Compared against 14 benchmarks: S&P 500, Fama-French factors (Mkt-RF, SMB, HML, UMD), mutual funds (FSMEX, FLPSX, etc.), hedge fund indices (HFRI), and smart beta ETFs.
 
 Includes efficient frontier visualization and Sharpe ratio equality tests (Jobson-Korkie with Memmel correction).
@@ -87,17 +160,11 @@ Monthly rolling backtest (36-month lookback, quarterly rebalance) with:
 - **Weight drift tracking**: Weights drift with returns between rebalances
 - **Ledoit-Wolf shrinkage**: Covariance estimated with shrinkage at each rebalance
 - **8 strategies**: 5 base + 3 BL variants (IC-Weighted+BL, MVO+BL, MaxSharpe+BL)
+- **Adaptive factor re-selection**: Annual greedy forward selection from full 20-factor universe
 
-| Strategy | Net Sharpe | Avg Turnover | Total Cost (bps) |
-|----------|-----------|-------------|-----------------|
-| Equal Weight | 1.184 | 4.9% | 55 |
-| Risk Parity | 1.143 | 5.5% | 60 |
-| Max Sharpe + BL | 0.913 | 38.1% | 423 |
-| MVO + BL | 0.892 | 27.7% | 307 |
+**BL improves MVO** (net Sharpe 0.853 → 1.087, turnover halved) and **Max Sharpe** (0.749 → 0.865). BL shrinks extreme weights toward equilibrium, acting as a natural regularizer.
 
-**BL improves MVO and Max Sharpe** (Sharpe +0.20 and +0.10 respectively) while reducing turnover. BL shrinks extreme weights toward equilibrium, acting as a natural regularizer.
-
-**Adaptive factor re-selection** (annual re-selection from full 20-factor universe) underperforms fixed factors across all strategies, demonstrating the cost of factor chasing and outer turnover.
+**Adaptive re-selection underperforms fixed factors** across all strategies (EW: 1.231 → 0.727), demonstrating the cost of factor chasing and outer turnover.
 
 ## Project Structure
 

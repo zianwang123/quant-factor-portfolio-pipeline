@@ -9,6 +9,7 @@ def fama_macbeth_regression(
     factor_exposures: dict[str, pd.DataFrame],
     is_sp500: pd.DataFrame,
     nw_lags: int = 6,
+    end_date: str = None,
 ) -> pd.DataFrame:
     """Two-pass Fama-MacBeth cross-sectional regression (univariate per factor).
 
@@ -19,12 +20,19 @@ def fama_macbeth_regression(
 
     Running univariate regressions avoids multicollinearity and memory issues
     when dealing with 20+ factors.
+
+    Args:
+        end_date: If provided, only use factor dates up to this period (inclusive)
+                  to avoid look-ahead bias. The last return used is end_date itself
+                  (predicted by factor at end_date - 1 month).
     """
     results = {}
 
     for fname, f_df in factor_exposures.items():
         gamma_series = []
         common_dates = returns.index[:-1].intersection(f_df.index)
+        if end_date is not None:
+            common_dates = common_dates[common_dates <= pd.Period(end_date, "M")]
 
         for t in common_dates:
             t_plus_1 = t + 1

@@ -55,6 +55,7 @@ stages = [
     ("Stage 1: Factor Construction", "scripts/stage_1_factors.py"),
     ("Stage 2: Factor Selection", "scripts/stage_2_selection.py"),
     ("Stage 3: Portfolio Optimization", "scripts/stage_3_optimize.py"),
+    ("Stage 4: Black-Litterman", "scripts/stage_4_black_litterman.py"),
 ]
 
 for name, script in stages:

@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from typing import Optional
 
 
 def build_factor_view(
@@ -63,6 +62,67 @@ def build_multi_view(
         P[k, :] = p_row
         Q_vec[k] = q
         omega_diag[k] = omega
+
+    Omega = np.diag(omega_diag)
+
+    return P, Q_vec, Omega
+
+
+def build_views_with_prior_scaling(
+    views: list[tuple[np.ndarray, float]],
+    sigma: np.ndarray,
+    tau: float,
+    ic_values: dict[str, float] = None,
+    view_names: list[str] = None,
+    base_confidence: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build BL view matrices with Omega scaled from the prior (He & Litterman 1999).
+
+    Instead of using raw QSpread variance for Omega, scale each view's
+    uncertainty proportional to tau * P_k @ Sigma @ P_k'. This ensures
+    views operate on the same scale as the prior and have meaningful impact.
+
+    Confidence adjustment:
+        omega_k = (tau * P_k @ Sigma @ P_k') / confidence_k
+        confidence_k = base_confidence * (1 + scale * |IC_k|)
+
+    Higher IC -> higher confidence -> lower omega -> view has more impact.
+
+    Args:
+        views: List of (P_row, Q) tuples — P_row is (N,), Q is scalar.
+        sigma: (N, N) covariance matrix.
+        tau: BL prior uncertainty scalar.
+        ic_values: Dict of factor_name -> IC for confidence weighting.
+        view_names: Names corresponding to each view (for IC lookup).
+        base_confidence: Base confidence multiplier (>1 means more confident).
+
+    Returns:
+        P: (K, N) pick matrix.
+        Q: (K,) expected returns vector.
+        Omega: (K, K) diagonal uncertainty matrix.
+    """
+    K = len(views)
+    N = views[0][0].shape[0]
+
+    P = np.zeros((K, N))
+    Q_vec = np.zeros(K)
+    omega_diag = np.zeros(K)
+
+    for k, (p_row, q) in enumerate(views):
+        P[k, :] = p_row
+        Q_vec[k] = q
+
+        # View portfolio variance under the prior
+        prior_var = tau * p_row @ sigma @ p_row
+
+        # IC-based confidence scaling
+        confidence = base_confidence
+        if ic_values and view_names and view_names[k] in ic_values:
+            ic = abs(ic_values[view_names[k]])
+            # Scale: IC of 0.05 gives 2x confidence, IC of 0.10 gives 3x
+            confidence *= (1.0 + 20.0 * ic)
+
+        omega_diag[k] = prior_var / confidence
 
     Omega = np.diag(omega_diag)
 

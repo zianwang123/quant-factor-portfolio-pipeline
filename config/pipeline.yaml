@@ -39,7 +39,7 @@ optimization:
   shrinkage: "ledoit_wolf"
 
 black_litterman:
-  tau: 0.5
+  tau: 0.05
   delta: 10
   view_confidence: "ic_based"
 

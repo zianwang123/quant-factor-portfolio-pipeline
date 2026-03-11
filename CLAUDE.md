@@ -80,9 +80,16 @@ outputs/
 - `plot_factors.py`: Per-factor plots (QSpread vs Capital IQ, long/short legs, quintile monotonicity, cumulative vs market, IC time series, correlation heatmap)
 - All integrated into `run_all_stages.py` as non-blocking plot stages (warn on failure, don't abort)
 
-### Stage 4: Black-Litterman — NOT TESTED
-- Code exists in `scripts/stage_4_black_litterman.py` and `src/black_litterman/`
-- Has NOT been run end-to-end yet
+### Stage 4: Black-Litterman — WORKING
+- **Part A (Factor-Level)**: Applies BL to factor allocation — prior is equal-weight, views from IC/FM analysis
+  - BL (tau=0.05, delta=10): Sharpe 0.921 — competitive with MVO and Risk Parity
+  - Sensitivity grid shows optimal BL (tau=0.5, delta=50): Sharpe 1.239
+  - Omega scaled from prior (He & Litterman 1999): `omega_k = tau * sigma_f[k,k] / confidence`
+  - Confidence from IC magnitude and FM significance
+- **Part B (Stock-Level)**: 274 S&P 500 stocks — shown for academic completeness
+  - Stock-level BL underperforms market cap (Sharpe 0.37 vs 0.83) — views too diffuse
+- Integrated into `run_all_stages.py` as a core stage
+- Saves: bl_factor_performance.csv, bl_factor_weights.csv, bl_sensitivity_sharpe.csv, bl_oos_returns.csv
 
 ## Latest Run Results (run_20260310_221037)
 
@@ -143,16 +150,7 @@ uv run python scripts/plot_factors.py
 
 ## What's Left To Do
 
-### Priority 1: Black-Litterman (Stage 4) — code exists, needs testing
-- Code: `scripts/stage_4_black_litterman.py`, `src/black_litterman/model.py`, `equilibrium.py`, `sensitivity.py`
-- Builds factor-based views (P, Q, Omega) from quintile sort results
-- Computes BL posterior returns and optimal weights
-- Runs OOS evaluation: BL weights vs market-cap weights
-- Includes Diebold-Mariano test and tau/delta sensitivity grid
-- Needs: integrate into `run_all_stages.py`, test for segfault resilience
-- **Why it matters**: Shows Bayesian thinking, combining prior (market equilibrium) with views (our factor signals)
-
-### Priority 2: Rolling Backtest with Transaction Costs — code exists, needs wiring
+### Priority 1: Rolling Backtest with Transaction Costs — code exists, needs wiring
 - Code: `src/portfolio/backtest.py` (`RollingBacktest` class)
 - Rolling-window rebalancing (monthly/quarterly/annual) with lookback
 - Tracks weight drift between rebalances
@@ -161,7 +159,7 @@ uv run python scripts/plot_factors.py
 - Needs: apply to our 5 portfolio variants, compare net-of-cost Sharpe
 - **Why it matters**: Shows practical awareness — backtests without costs are unrealistic, every quant firm cares about implementation shortfall
 
-### Priority 3: Polished Visualization Suite — code exists, needs wiring
+### Priority 2: Polished Visualization Suite — code exists, needs wiring
 - Code: `src/visualization/portfolio_plots.py`
 - `plot_efficient_frontier()` — mean-variance frontier with GMV, Max Sharpe, Risk Parity points marked
 - `plot_rolling_sharpe_comparison()` — rolling 36M Sharpe for multiple portfolios over time
@@ -170,43 +168,43 @@ uv run python scripts/plot_factors.py
 - Needs: wire into Stage 3 or a dedicated plotting stage
 - **Why it matters**: Classic portfolio theory visuals that interviewers expect; rolling Sharpe shows regime behavior
 
-### Priority 4: Bootstrap Confidence Intervals for Sharpe Ratios — new code needed
+### Priority 3: Bootstrap Confidence Intervals for Sharpe Ratios — new code needed
 - Block bootstrap (preserving autocorrelation) to generate 95% CI on Sharpe ratios
 - Instead of just reporting Sharpe = 1.31, show CI [0.8, 1.8] to address "is this luck?"
 - Apply to all our variants and benchmarks
 - **Why it matters**: Shows statistical rigor, directly addresses overfitting concerns
 
-### Priority 5: Factor Timing / Regime Analysis — new code needed
+### Priority 4: Factor Timing / Regime Analysis — new code needed
 - Split OOS into bull vs bear periods (e.g., using market drawdowns or VIX threshold)
 - Show which factors work in which regime (e.g., momentum crashes in reversals, value works in recoveries)
 - Conditional Sharpe ratios by regime
 - **Why it matters**: Quant funds care about factor crowding and regime shifts; shows awareness of when strategies fail
 
-### Priority 6: Turnover-Constrained Optimization — new code needed
+### Priority 5: Turnover-Constrained Optimization — new code needed
 - Add turnover penalty to MVO/Max Sharpe objective: `min w'Σw - λ·μ'w + κ·||w - w_prev||₁`
 - Optimizer explicitly trades off Sharpe vs rebalancing cost
 - Show efficient frontier of Sharpe vs turnover
 - **Why it matters**: This is what real quant PMs do — net alpha after costs is all that matters
 
-### Priority 7: Factor Risk Attribution — new code needed
+### Priority 6: Factor Risk Attribution — new code needed
 - Decompose portfolio returns into contributions from each factor over time
 - Show time-varying factor exposures (rolling regression on factor returns)
 - Answer "where did the return come from?" for each month
 - **Why it matters**: Core skill for portfolio managers, shows you can explain P&L
 
-### Priority 8: Stress Testing — new code needed
+### Priority 7: Stress Testing — new code needed
 - Apply historical scenarios (2008 GFC, 2020 COVID, 2022 rate hikes) to portfolio
 - Use full-sample factor returns even if OOS doesn't cover those periods
 - Show expected drawdown under each scenario
 - **Why it matters**: Standard risk management practice at every quant fund
 
-### Priority 9: OOS Factor Decay Analysis — partially exists
+### Priority 8: OOS Factor Decay Analysis — partially exists
 - IC decay already computed in-sample (`src/selection/information_coefficient.py`)
 - Run it OOS too — show how quickly each factor's signal decays (alpha half-life)
 - Compare in-sample vs OOS decay rates
 - **Why it matters**: Directly measures signal persistence, core to any quant strategy's capacity analysis
 
-### Priority 10: Cornish-Fisher VaR — code exists, needs wiring
+### Priority 9: Cornish-Fisher VaR — code exists, needs wiring
 - Code: `src/analytics/risk.py` has `cornish_fisher_var()`
 - Adjusts VaR for skewness and kurtosis (non-normal returns)
 - Add to benchmark comparison table alongside historical VaR

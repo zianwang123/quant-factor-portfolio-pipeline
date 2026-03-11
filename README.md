@@ -147,10 +147,10 @@ Compared against 14 benchmarks: S&P 500, Fama-French factors (Mkt-RF, SMB, HML, 
 
 Includes efficient frontier visualization and Sharpe ratio equality tests (Jobson-Korkie with Memmel correction).
 
-### Stage 4: Black-Litterman
+### Stage 4: Black-Litterman Robustness Analysis
 
-- **Part A (Factor-Level)**: BL applied to factor allocation weights. Prior = equal-weight; views from IC and FM analysis. He & Litterman (1999) Omega scaling. Sensitivity grid over τ ∈ {0.01, 0.05, 0.1, 0.5, 1.0} × δ ∈ {1, 5, 10, 50, 100}.
-- **Part B (Stock-Level)**: 274 S&P 500 stocks — shown for academic completeness. Views too diffuse to beat market-cap weighting.
+- **Part A (BL Robustness)**: Tests whether Stage 3's BL improvement is robust or fragile to hyperparameter choice. Runs a τ × δ sensitivity grid (30 combinations) through the *actual* Stage 3 optimizers (MVO, Max Sharpe with matching constraints). Baseline τ=0.05, δ=10 chosen a priori from He & Litterman (1999) — the grid is a robustness check, **not** parameter optimization (using OOS to select τ/δ would be data snooping). Also runs Jobson-Korkie and Diebold-Mariano tests for formal statistical significance of BL improvement. Note: with He & Litterman's recommended Omega scaling (Ω ∝ τ), τ cancels out of the posterior mean — we fix Omega at baseline τ to break this cancellation and make τ sensitivity meaningful.
+- **Part B (Stock-Level BL)**: 274 S&P 500 stocks — demonstrates why factor-level is the right granularity (stock-level BL Sharpe 0.32 vs market-cap 0.83, views too diffuse across hundreds of stocks).
 
 ### Stage 5: Rolling Backtest
 

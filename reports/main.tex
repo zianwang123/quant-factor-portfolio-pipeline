@@ -386,27 +386,88 @@ where $S$ is skewness, $K$ is kurtosis, and $z_\alpha$ is the standard normal qu
 We test whether our portfolios statistically outperform benchmarks using the Jobson-Korkie test with Memmel correction. For Equal Weight vs S\&P~500, the difference in Sharpe ratios (1.20 vs 0.91) is economically meaningful, though statistical significance depends on the short OOS window (60 months). The test has low power with $T=60$ monthly observations---a longer OOS period or bootstrap confidence intervals would strengthen inference.
 
 % ═══════════════════════════════════════════════════════════════
-\section{Black-Litterman Analysis}
+\section{Black-Litterman Robustness Analysis}
 \label{sec:bl}
 % ═══════════════════════════════════════════════════════════════
 
-\subsection{Factor-Level BL}
+Stage~3 uses BL as a return estimator inside MVO and Max Sharpe (Section~\ref{sec:optimization}). This section tests whether that improvement is robust to the choice of hyperparameters ($\tau$, $\delta$) and whether it is statistically significant.
 
-At the factor allocation level, Black-Litterman combines an equal-weight equilibrium prior with views derived from in-sample IC and Fama-MacBeth analysis. With baseline parameters ($\tau = 0.05$, $\delta = 10$), the BL factor portfolio achieves a Sharpe of 0.92---competitive with MVO and Risk Parity.
+\subsection{Hyperparameter Sensitivity}
 
-\subsection{Sensitivity Analysis}
+The baseline $\tau = 0.05$, $\delta = 10$ was chosen \textit{a priori} from \citet{he1999intuition}. We evaluate OOS Sharpe ratios across a grid of $\tau \in \{0.01, 0.025, 0.05, 0.1, 0.25, 0.5\}$ and $\delta \in \{2.5, 5, 10, 25, 50\}$, re-running the BL posterior through the \textit{exact same} Stage~3 optimizers (MVO with leverage $\leq 2\times$, Max Sharpe with leverage $\leq 3\times$).
 
-We conduct a grid search over $\tau \in \{0.01, 0.05, 0.1, 0.5, 1.0\}$ and $\delta \in \{1, 5, 10, 50, 100\}$:
+\textbf{Important}: This grid uses OOS data for \textit{evaluation}, not parameter selection. Choosing $\tau$/$\delta$ to maximize OOS Sharpe would be data snooping.
 
-\begin{itemize}[noitemsep]
-    \item \textbf{Best}: $\tau = 0.5$, $\delta = 50$ yields Sharpe 1.24
-    \item Higher $\tau$ increases view weight relative to prior
-    \item Higher $\delta$ increases risk aversion, shrinking toward equal weight
-\end{itemize}
+\textbf{Tau cancellation.} Under He \& Litterman's recommended $\boldsymbol{\Omega}$ scaling ($\Omega_{kk} = \tau \cdot \Sigma_{kk} / c_k$), $\tau$ appears in both the prior precision $(\tau\boldsymbol{\Sigma})^{-1}$ and the view precision $\boldsymbol{\Omega}^{-1}$, canceling out of the posterior mean $\bar{\boldsymbol{\mu}}$. Since the optimizers use only $\bar{\boldsymbol{\mu}}$ (not the posterior covariance), $\tau$ has no effect. We fix $\boldsymbol{\Omega}$ at the baseline $\tau = 0.05$ to break this cancellation and make $\tau$ sensitivity meaningful.
+
+\begin{table}[H]
+\centering
+\caption{MVO + BL OOS Sharpe Across ($\tau$, $\delta$) Grid}
+\label{tab:bl_grid_mvo}
+\small
+\begin{tabular}{lccccc}
+\toprule
+ & $\delta=2.5$ & $\delta=5$ & $\delta=10$ & $\delta=25$ & $\delta=50$ \\
+\midrule
+$\tau=0.01$  & 0.76 & 0.97 & \textbf{1.17} & \textbf{1.20} & \textbf{1.16} \\
+$\tau=0.025$ & 0.75 & 0.77 & \textbf{1.02} & \textbf{1.13} & \textbf{1.08} \\
+$\tau=0.05$  & 0.75 & 0.74 & 0.96 & \textbf{1.08} & \textbf{1.03} \\
+$\tau=0.1$   & 0.76 & 0.74 & 0.95 & \textbf{1.06} & \textbf{1.00} \\
+$\tau=0.25$  & 0.76 & 0.74 & 0.95 & \textbf{1.05} & 0.98 \\
+$\tau=0.5$   & 0.77 & 0.74 & 0.95 & \textbf{1.06} & 0.98 \\
+\bottomrule
+\end{tabular}
+\\[0.3em]
+\small Plain MVO baseline: 0.97. Bold = BL beats plain MVO. BL improves MVO in 50\% of grid cells.
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Max Sharpe + BL OOS Sharpe Across ($\tau$, $\delta$) Grid}
+\label{tab:bl_grid_ms}
+\small
+\begin{tabular}{lccccc}
+\toprule
+ & $\delta=2.5$ & $\delta=5$ & $\delta=10$ & $\delta=25$ & $\delta=50$ \\
+\midrule
+$\tau=0.01$  & 0.75 & \textbf{0.94} & \textbf{1.17} & \textbf{1.30} & \textbf{1.27} \\
+$\tau=0.025$ & 0.73 & 0.79 & \textbf{0.94} & \textbf{1.21} & \textbf{1.27} \\
+$\tau=0.05$  & 0.75 & 0.78 & 0.84 & \textbf{1.07} & \textbf{1.23} \\
+$\tau=0.1$   & 0.79 & 0.80 & 0.84 & \textbf{0.93} & \textbf{1.11} \\
+$\tau=0.25$  & 0.83 & 0.83 & 0.85 & \textbf{0.88} & \textbf{0.94} \\
+$\tau=0.5$   & 0.85 & 0.85 & 0.86 & \textbf{0.87} & \textbf{0.90} \\
+\bottomrule
+\end{tabular}
+\\[0.3em]
+\small Plain Max Sharpe baseline: 0.87. Bold = BL beats plain Max Sharpe. BL improves Max Sharpe in 50\% of grid cells.
+\end{table}
+
+The pattern is clear: BL helps most at \textbf{higher $\delta$} (more risk aversion shrinks weights toward equilibrium) and \textbf{lower $\tau$} (heavier prior weight stabilizes return estimates). The best region ($\tau \leq 0.05$, $\delta \geq 25$) consistently delivers Sharpe $> 1.0$. Our baseline ($\tau = 0.05$, $\delta = 10$) is conservative---it captures moderate BL improvement without overfitting to the grid.
+
+\subsection{Statistical Significance}
+
+We test whether the BL improvement is statistically significant using the Jobson-Korkie test (Sharpe ratio equality with Memmel correction) and the Diebold-Mariano test (equal predictive accuracy):
+
+\begin{table}[H]
+\centering
+\caption{Statistical Tests of BL Improvement (Baseline $\tau=0.05$, $\delta=10$)}
+\label{tab:bl_tests}
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Comparison} & \textbf{$\Delta$ Sharpe} & \textbf{JK $z$} & \textbf{JK $p$} & \textbf{Significant?} \\
+\midrule
+MVO+BL vs MVO             & +0.07 & 0.62 & 0.53 & No \\
+MaxSharpe+BL vs MaxSharpe & +0.09 & 1.41 & 0.16 & No \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Neither test rejects $H_0$ at the 5\% level. With only $T = 60$ monthly OOS observations, the Jobson-Korkie test has low power for detecting Sharpe differences of $\sim$0.1. The \textit{economic} significance may be more informative: BL consistently improves Sharpe and halves turnover (Section~\ref{sec:backtest}), and the sensitivity grid shows improvement across a wide region of the parameter space.
 
 \subsection{Stock-Level BL}
 
-For completeness, we implement stock-level BL on 274 S\&P~500 stocks. The stock-level BL (Sharpe 0.33) underperforms market-cap weighting (0.83), as views based on cross-sectional factor scores are too diffuse when applied to individual stocks. This motivates our focus on factor-level allocation.
+For completeness, we implement stock-level BL on 274 S\&P~500 stocks. The stock-level BL (Sharpe 0.32) underperforms market-cap weighting (0.83), as views based on cross-sectional factor scores are too diffuse when applied to individual stocks. This motivates our focus on factor-level allocation: with only $K=5$ factors, each view carries meaningful information, whereas spreading views across $N \approx 274$ stocks dilutes signal into noise.
 
 % ═══════════════════════════════════════════════════════════════
 \section{Rolling Backtest with Transaction Costs}

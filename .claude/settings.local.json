@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(cd \"C:\\\\Users\\\\zianw\\\\Projects\\\\quant-factor-portfolio-pipeline\" && uv run python scripts/stage_1_factors.py 2>&1 | head -100)",
+      "Bash(cd \"C:\\\\Users\\\\zianw\\\\Projects\\\\quant-factor-portfolio-pipeline\" && uv run python scripts/stage_1_factors.py 2>&1 | tail -80)",
+      "Read(//c/Users/zianw/Projects/quant-factor-portfolio-pipeline/**)",
+      "Bash(uv run:*)"
+    ]
+  }
+}

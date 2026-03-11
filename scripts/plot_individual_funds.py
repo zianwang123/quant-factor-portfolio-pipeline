@@ -1,10 +1,6 @@
 """Plot individual mutual fund and hedge fund performance vs our portfolio."""
-import faulthandler
-faulthandler.enable()
-
 import os
 import sys
-import gc
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -18,7 +14,16 @@ def _flush(msg=""):
         print(msg)
     sys.stdout.flush()
 
-config_start = "2013-01"
+from src.config import load_config
+from src.data.loader import load_sp500_returns
+
+config = load_config(str(PROJECT_ROOT / "config" / "pipeline.yaml"), project_root=str(PROJECT_ROOT))
+oos_start = config.dates.out_of_sample_start
+
+# Load risk-free rate for excess return computation
+sp500_df = load_sp500_returns(config)
+rf = sp500_df["rf"]
+
 run_id = os.environ.get("PIPELINE_RUN_ID", "")
 if run_id:
     run_base = PROJECT_ROOT / "outputs" / run_id
@@ -41,6 +46,29 @@ _flush("Reading Excel...")
 xl = pd.ExcelFile(PROJECT_ROOT / "data" / "raw" / "fama_french_factors.xlsx")
 
 
+def _fix_anomalies(df: pd.DataFrame) -> pd.DataFrame:
+    """Fix data anomalies: replace spike+reversal pairs with neutral values.
+
+    Detects months where return > 500% followed by > -80% drop (or vice versa),
+    which indicates a split/distribution adjustment error.
+    """
+    df = df.copy()
+    for col in df.columns:
+        series = df[col].dropna()
+        for i in range(len(series) - 1):
+            curr, nxt = series.iloc[i], series.iloc[i + 1]
+            # Spike then crash: e.g. +800% then -90%
+            if curr > 5.0 and nxt < -0.8:
+                # Replace both with the net return spread across 2 months
+                net = (1 + curr) * (1 + nxt) - 1
+                monthly = (1 + net) ** 0.5 - 1
+                df.loc[series.index[i], col] = monthly
+                df.loc[series.index[i + 1], col] = monthly
+                _flush(f"  Fixed anomaly in {col}: {series.index[i]} ({curr:.2f}) "
+                       f"+ {series.index[i+1]} ({nxt:.2f}) -> {monthly:.4f} each")
+    return df
+
+
 def parse_sheet(name):
     df = pd.read_excel(xl, name)
     df["Date"] = df["Date"].astype(str)
@@ -52,7 +80,8 @@ def parse_sheet(name):
     # auto-detect if returns are in pct points (>1 means pct)
     if numeric.abs().mean().mean() > 1:
         numeric = numeric / 100
-    return numeric.loc[config_start:]
+    numeric = _fix_anomalies(numeric)
+    return numeric.loc[oos_start:]
 
 
 # ── Save intermediate CSVs for each sheet ──
@@ -65,14 +94,14 @@ for sheet_name in ["Mutual Fund", "Hedge Fund Index"]:
     cum_data = {}
 
     # Our portfolio
-    our = our_ret.loc[config_start:]
+    our = our_ret.loc[oos_start:]
     cum_data["Our: IC-Weighted"] = (1 + our).cumprod()
 
     # S&P 500
-    sp = sp500_ret.loc[config_start:]
+    sp = sp500_ret.loc[oos_start:]
     cum_data["S&P 500"] = (1 + sp).cumprod()
 
-    # Each fund
+    # Each fund (subtract rf for excess-return Sharpe)
     sharpe_dict = {}
     for col in df.columns:
         r = df[col].dropna()
@@ -80,7 +109,9 @@ for sheet_name in ["Mutual Fund", "Hedge Fund Index"]:
             _flush(f"  Skipping {col} (only {len(r)} months)")
             continue
         cum_data[col] = (1 + r).cumprod()
-        sharpe_dict[col] = r.mean() / r.std() * np.sqrt(12)
+        rf_aligned = rf.reindex(r.index).fillna(0)
+        r_excess = r - rf_aligned
+        sharpe_dict[col] = r_excess.mean() / r_excess.std() * np.sqrt(12)
         _flush(f"  {col}: Sharpe={sharpe_dict[col]:.3f}, cumulative={cum_data[col].iloc[-1]:.3f}")
 
     # Save CSV first (crash-safe)
@@ -96,7 +127,6 @@ for sheet_name in ["Mutual Fund", "Hedge Fund Index"]:
     sharpe_series.to_csv(tables / f"{fname}_sharpes.csv")
     _flush(f"  Saved CSV: {fname}_sharpes.csv")
 
-gc.collect()
 
 # ── Now plot from saved CSVs (separate step to survive crashes) ──
 _flush("\n--- Generating plots ---")
@@ -106,6 +136,8 @@ COLORS_FUND = [
     "#16a34a", "#f59e0b", "#8b5cf6", "#06b6d4", "#ec4899",
     "#84cc16", "#f97316", "#6366f1", "#14b8a6", "#e11d48",
 ]
+
+oos_end = config.dates.end
 
 for sheet_name in ["Mutual Fund", "Hedge Fund Index"]:
     fname = sheet_name.lower().replace(" ", "_")
@@ -144,7 +176,7 @@ for sheet_name in ["Mutual Fund", "Hedge Fund Index"]:
         ))
 
     fig.update_layout(
-        title=f"{sheet_name}: Individual Fund Performance vs Our Portfolio (OOS 2013-2019)",
+        title=f"{sheet_name}: Individual Fund Performance vs Our Portfolio (OOS {oos_start[:4]}-{oos_end[:4]})",
         yaxis_title="Cumulative Return (Growth of $1)",
         template="plotly_white",
         height=700, width=1200,
@@ -163,6 +195,5 @@ for sheet_name in ["Mutual Fund", "Hedge Fund Index"]:
         _flush(f"  PNG export failed: {e}")
 
     del fig
-    gc.collect()
 
 _flush("\nDone!")

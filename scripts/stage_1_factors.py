@@ -9,12 +9,7 @@ import faulthandler
 faulthandler.enable()
 import sys
 import gc
-import pickle
 from pathlib import Path
-
-# Disable tqdm monitor thread (causes segfaults via GIL contention on Windows)
-import tqdm as _tqdm
-_tqdm.tqdm.monitor_interval = 0
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -89,10 +84,15 @@ def run_stage_1(config_path: str = None):
         sort_results[name] = result
         gc.collect()
 
-    # *** INTERMEDIATE DUMP: save QSpreads immediately ***
+    # *** INTERMEDIATE DUMP: save QSpreads and sort results immediately ***
     qspreads = pd.DataFrame({name: res["qspread"] for name, res in sort_results.items()})
     qspreads.to_csv(tables_path / "factor_qspreads.csv")
     _flush(f"  QSpreads saved: {qspreads.shape}")
+
+    import pickle
+    with open(cache_dir / "sort_results.pkl", "wb") as f:
+        pickle.dump(sort_results, f)
+    _flush("  Cached sort_results.pkl for plotting")
 
     # ── Step 4: Validate against Capital IQ ──
     _flush("\n[4/6] Validating against Capital IQ benchmarks...")

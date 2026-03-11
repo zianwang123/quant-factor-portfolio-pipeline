@@ -12,10 +12,6 @@ import gc
 import sys
 from pathlib import Path
 
-# Disable tqdm monitor thread
-import tqdm as _tqdm
-_tqdm.tqdm.monitor_interval = 0
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -111,6 +107,14 @@ def run_stage_2(config_path: str = None, factors: dict = None, qspreads: dict = 
         "score": [results["consensus_scores"].get(f, 0) for f in selected],
     })
     selected_df.to_csv(tables_path / "selected_factor_combination.csv", index=False)
+
+    # Save IC series for factor plots
+    if "ic_series" in results:
+        import pickle
+        with open(cache_dir / "ic_series.pkl", "wb") as f:
+            pickle.dump(results["ic_series"], f)
+        _flush("  Cached ic_series.pkl for plotting")
+
     _flush("  CSVs saved")
 
     # ── Report ──

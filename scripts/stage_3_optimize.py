@@ -6,7 +6,6 @@ and Fama-French factors.
 """
 import faulthandler
 faulthandler.enable()
-import gc
 import sys
 from pathlib import Path
 
@@ -21,21 +20,15 @@ from src.factors.registry import build_all_factors
 from src.factors.validation import QuintileSorter
 from src.portfolio.covariance import ledoit_wolf_shrinkage
 from src.portfolio.optimization import (
-    mean_variance_optimize, global_minimum_variance,
-    max_sharpe_portfolio, risk_parity,
+    mean_variance_optimize, max_sharpe_portfolio, risk_parity,
 )
 from src.analytics.performance import (
-    compute_descriptive_stats, max_drawdown, cumulative_returns,
-    rolling_sharpe, sortino_ratio, calmar_ratio,
+    max_drawdown, sortino_ratio, calmar_ratio,
 )
 from src.analytics.risk import (
-    parametric_var, historical_var, cornish_fisher_var, cvar, drawdown_stats,
+    historical_var, cvar, drawdown_stats,
 )
-from src.analytics.statistical_tests import sharpe_ratio_test, diebold_mariano_test
-from src.visualization.portfolio_plots import (
-    plot_efficient_frontier, plot_portfolio_cumulative_comparison,
-    plot_rolling_sharpe_comparison,
-)
+from src.analytics.statistical_tests import sharpe_ratio_test
 
 
 def _parse_ff_sheet(df: pd.DataFrame) -> pd.DataFrame:
@@ -54,26 +47,30 @@ def _detect_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _build_composite_qspread(
-    qspreads: pd.DataFrame,
-    ic_weights: dict[str, float] | None = None,
-) -> pd.Series:
-    """Build a composite long-short return from multiple factor QSpreads.
+def _fix_anomalies(df: pd.DataFrame) -> pd.DataFrame:
+    """Fix data anomalies: replace spike+reversal pairs with neutral values.
 
-    IC-weighted combination: weight each factor's QSpread by its IC magnitude.
+    Detects months where return > 500% followed by > -80% drop (or vice versa),
+    which indicates a split/distribution adjustment error.
     """
-    selected = qspreads.columns.tolist()
-    if ic_weights:
-        weights = np.array([abs(ic_weights.get(f, 1.0)) for f in selected])
-    else:
-        weights = np.ones(len(selected))
+    df = df.copy()
+    for col in df.columns:
+        series = df[col].dropna()
+        for i in range(len(series) - 1):
+            curr, nxt = series.iloc[i], series.iloc[i + 1]
+            if curr > 5.0 and nxt < -0.8:
+                net = (1 + curr) * (1 + nxt) - 1
+                monthly = (1 + net) ** 0.5 - 1
+                df.loc[series.index[i], col] = monthly
+                df.loc[series.index[i + 1], col] = monthly
+                _flush(f"  Fixed anomaly in {col}: {series.index[i]} ({curr:.2f}) "
+                       f"+ {series.index[i+1]} ({nxt:.2f}) -> {monthly:.4f} each")
+    return df
 
-    weights = weights / weights.sum()
-    composite = (qspreads * weights).sum(axis=1)
-    return composite
 
-
-def _flush():
+def _flush(msg=""):
+    if msg:
+        print(msg)
     sys.stdout.flush()
     sys.stderr.flush()
 
@@ -105,7 +102,6 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
             factors = build_all_factors(panel, config, include_extended=True, exclude=["Beta"])
 
         panel._raw = None
-        gc.collect()
 
         sorter = QuintileSorter(n_bins=config.factors.quintile_bins)
         sort_results = sorter.sort_all_factors(factors, returns, is_sp500)
@@ -190,9 +186,9 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     except Exception as e:
         print(f"  MVO failed: {e}")
 
-    # 4. Max Sharpe (allow shorting, same as MVO)
+    # 4. Max Sharpe (allow shorting, gross leverage capped at 3x like MVO)
     try:
-        ms = max_sharpe_portfolio(mu_is, sigma_is, long_only=False)
+        ms = max_sharpe_portfolio(mu_is, sigma_is, long_only=False, gross_leverage=3.0)
         our_portfolios["Max Sharpe"] = ms
         print(f"  Max Sharpe: done")
     except Exception as e:
@@ -230,10 +226,11 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
 
     # S&P 500 index return as primary benchmark
     sp500_df = load_sp500_returns(config)
+    rf = sp500_df["rf"]  # monthly risk-free rate
     benchmarks = {}
-    benchmarks["S&P 500"] = sp500_df["ret_sp500"]  # already in decimal
+    benchmarks["S&P 500"] = sp500_df["ret_sp500"] - rf  # excess return
 
-    # Load benchmark data from pre-converted CSVs (avoids openpyxl segfault)
+    # Load benchmark data from pre-converted CSVs
     processed_dir = config.project_root / config.data.processed_dir
     benchmark_csvs = {
         "fama_french_factor": "Fama-French Factor",
@@ -251,6 +248,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
             continue
         df = _parse_ff_sheet(raw_df)
         df = _detect_and_normalize(df.select_dtypes(include=[np.number]))
+        df = _fix_anomalies(df)
         df = df.dropna(how="all")
 
         if "fama" in sheet_name.lower() or "ff" in sheet_name.lower():
@@ -263,12 +261,16 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
             if "umd" in df.columns:
                 benchmarks["FF Momentum (UMD)"] = df["umd"]
         else:
-            ew_ret = df.mean(axis=1)
+            # Subtract risk-free rate to get excess returns for long-only benchmarks
+            rf_aligned = rf.reindex(df.index).fillna(0)
+            df_excess = df.sub(rf_aligned, axis=0)
+
+            ew_ret = df_excess.mean(axis=1)
             benchmarks[f"{sheet_name} (EW)"] = ew_ret
 
-            sharpes = df.mean() / df.std()
+            sharpes = df_excess.mean() / df_excess.std()
             best_fund = sharpes.idxmax()
-            benchmarks[f"{sheet_name} Best ({best_fund})"] = df[best_fund]
+            benchmarks[f"{sheet_name} Best ({best_fund})"] = df_excess[best_fund]
 
     print(f"  Benchmarks loaded: {list(benchmarks.keys())}")
 

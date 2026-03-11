@@ -77,11 +77,14 @@ def calmar_ratio(returns: pd.Series) -> float:
 
 
 def sortino_ratio(returns: pd.Series, target: float = 0.0) -> float:
-    """Sortino ratio using downside deviation."""
+    """Annualized Sortino ratio using downside deviation (assumes monthly data)."""
     excess = returns - target
     downside = returns[returns < target]
     downside_std = downside.std()
-    return excess.mean() / downside_std if downside_std > 0 else np.nan
+    if downside_std <= 0:
+        return np.nan
+    monthly = excess.mean() / downside_std
+    return monthly * np.sqrt(12)
 
 
 def t_test_factor_spreads(qspreads: pd.DataFrame) -> pd.DataFrame:

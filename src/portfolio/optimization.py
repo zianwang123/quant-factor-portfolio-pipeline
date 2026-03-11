@@ -113,11 +113,17 @@ def max_sharpe_portfolio(
     rf: float = 0.0,
     long_only: bool = True,
     max_weight: float = 1.0,
+    gross_leverage: Optional[float] = None,
 ) -> np.ndarray:
     """Find the Maximum Sharpe Ratio (tangency) portfolio.
 
     Uses the reformulation: min w'Sigma*w  s.t. (mu-rf)'w = 1, w >= 0
     Then normalize weights to sum to 1.
+
+    Args:
+        gross_leverage: If set, caps sum(|w|) after normalization.
+            Solved by adding a leverage constraint in the reformulated space
+            and re-normalizing.
     """
     n = len(mu)
     w = cp.Variable(n)
@@ -128,6 +134,12 @@ def max_sharpe_portfolio(
 
     if long_only:
         constraints.append(w >= 0)
+
+    if gross_leverage is not None:
+        # In the reformulated space, leverage after normalization is
+        # ||w||_1 / sum(w). We constrain ||w||_1 <= gross_leverage * sum(w)
+        # which is equivalent for the normalized portfolio.
+        constraints.append(cp.norm(w, 1) <= gross_leverage * cp.sum(w))
 
     prob = cp.Problem(objective, constraints)
     prob.solve(solver=cp.SCS, verbose=False)

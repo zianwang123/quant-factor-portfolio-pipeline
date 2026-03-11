@@ -81,7 +81,9 @@ def ic_decay_analysis(
     decay = {}
 
     for lag in range(1, max_lag + 1):
-        shifted_returns = returns.shift(-lag)
+        # compute_ic_series internally uses t+1 returns, so shift by (lag-1)
+        # to get IC at horizon t+lag
+        shifted_returns = returns.shift(-(lag - 1))
         ic_series = compute_ic_series(factor, shifted_returns, is_sp500)
         summary = ic_summary(ic_series)
         if summary:

@@ -76,10 +76,7 @@ def build_all_factors(
     factors = {}
 
     for name, factor_cls in tqdm(registry.items(), desc="Building factors"):
-        if name == "Beta":
-            factor = factor_cls(config)
-        else:
-            factor = factor_cls()
+        factor = factor_cls(config) if name == "Beta" else factor_cls()
 
         try:
             factors[name] = factor.compute(panel)

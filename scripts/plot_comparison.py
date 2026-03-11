@@ -27,20 +27,24 @@ oos.index = pd.PeriodIndex(oos.index, freq="M")
 # This shows what a long-only investor would get by overlaying our factor signals
 oos["Our: Market + Factor Alpha"] = oos["S&P 500"] + oos["Our: IC-Weighted"]
 
-# Pick key series: all "Our:" variants + key benchmarks
+# Pick key series: all "Our:" variants + key benchmarks (EW and Best)
 key_names = [
     col for col in oos.columns
     if col.startswith("Our:") or any(k in col for k in [
-        "S&P 500", "Hedge Fund Index (EW)", "Mutual Fund (EW)", "Smart Beta (EW)",
+        "S&P 500", "Hedge Fund Index", "Mutual Fund", "Smart Beta",
     ])
 ]
+# Exclude FF factors (they have their own names, not "Mutual Fund" etc.)
+key_names = [n for n in key_names if "FF " not in n]
 print(f"Plotting: {key_names}")
 
 # Colors: blues for our portfolios, other colors for benchmarks
 OUR_COLORS = {"Equal Weight": "#2563eb", "IC-Weighted": "#0ea5e9", "MVO": "#7c3aed",
               "Max Sharpe": "#db2777", "Risk Parity": "#059669", "Market + Factor Alpha": "#0d9488"}
 BENCH_COLORS = {"S&P 500": "#dc2626", "Mutual Fund (EW)": "#f59e0b",
-                "Smart Beta (EW)": "#84cc16", "Hedge Fund Index (EW)": "#f97316"}
+                "Smart Beta (EW)": "#84cc16", "Hedge Fund Index (EW)": "#f97316",
+                "Mutual Fund Best": "#d97706", "Smart Beta Best": "#65a30d",
+                "Hedge Fund Index Best": "#ea580c"}
 
 def _get_color(name):
     for k, c in OUR_COLORS.items():

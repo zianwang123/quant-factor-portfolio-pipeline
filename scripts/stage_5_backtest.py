@@ -386,6 +386,36 @@ def run_stage_5(config_path: str = None):
     _flush(f"  Selected factors: {selected_factors}")
     _flush(f"  QSpread data: {sel_qspreads.shape}")
 
+    # ── Load benchmark returns for comparison plots ──
+    _flush("  Loading benchmark data for plots...")
+    from src.data.loader import load_sp500_returns
+    benchmark_returns = {}
+    try:
+        sp500_df = load_sp500_returns(config)
+        rf = sp500_df["rf"]
+        sp500_excess = sp500_df["ret_sp500"] - rf
+        if not isinstance(sp500_excess.index, pd.PeriodIndex):
+            sp500_excess.index = sp500_excess.index.to_period("M")
+        benchmark_returns["S&P 500"] = sp500_excess
+    except Exception as e:
+        _flush(f"  WARNING: Could not load S&P 500: {e}")
+
+    # Load additional benchmarks from Stage 3 output
+    benchmark_csv = tables_path / "benchmark_raw_returns.csv"
+    if benchmark_csv.exists():
+        try:
+            bm_df = pd.read_csv(benchmark_csv, index_col=0)
+            bm_df.index = pd.PeriodIndex(bm_df.index, freq="M")
+            # Only add key benchmarks to avoid plot clutter
+            for col in ["Hedge Fund Index (EW)", "Hedge Fund Index Best (HFRIMAI)",
+                         "Mutual Fund (EW)", "FF Market (Mkt-RF)"]:
+                if col in bm_df.columns and col not in benchmark_returns:
+                    benchmark_returns[col] = bm_df[col].dropna()
+        except Exception:
+            pass
+
+    _flush(f"  Loaded {len(benchmark_returns)} benchmarks")
+
     # ── Run rolling backtests ──
     _flush("\n[2/4] Running rolling backtests...")
 
@@ -540,8 +570,22 @@ def run_stage_5(config_path: str = None):
         "MVO + BL": "#a855f7",
         "Max Sharpe + BL": "#f43f5e",
     }
+    BENCHMARK_COLORS = {
+        "S&P 500": "#78716c",
+        "Hedge Fund Index (EW)": "#a3a3a3",
+        "Hedge Fund Index Best (HFRIMAI)": "#525252",
+        "Mutual Fund (EW)": "#d4d4d4",
+        "FF Market (Mkt-RF)": "#b0b0b0",
+    }
     # BL variants use dashed lines
     BL_VARIANTS = {"IC-Weighted + BL", "MVO + BL", "Max Sharpe + BL"}
+
+    # Filter benchmarks to OOS period
+    oos_benchmarks = {}
+    for bname, bret in benchmark_returns.items():
+        bret_oos = bret.loc[bret.index >= oos_start_period].dropna()
+        if len(bret_oos) > 12:
+            oos_benchmarks[bname] = bret_oos
 
     # 1. Cumulative returns comparison (net of costs)
     fig = make_subplots(
@@ -579,6 +623,27 @@ def run_stage_5(config_path: str = None):
             showlegend=False, legendgroup=pname,
         ), row=2, col=1)
 
+    # Add benchmarks to cumulative plot
+    for bname, bret in oos_benchmarks.items():
+        cum = (1 + bret).cumprod()
+        dates = bret.index.to_timestamp()
+        color = BENCHMARK_COLORS.get(bname, "#94a3b8")
+        fig.add_trace(go.Scatter(
+            x=dates, y=cum.values,
+            mode="lines", name=f"{bname} ({_sharpe(bret):.2f})",
+            line=dict(color=color, width=2, dash="dot"),
+            legendgroup=bname,
+        ), row=1, col=1)
+        running_max = cum.cummax()
+        dd = (cum - running_max) / running_max
+        fig.add_trace(go.Scatter(
+            x=dates, y=dd.values,
+            mode="lines", name=bname,
+            line=dict(color=color, width=1, dash="dot"),
+            fill="tozeroy", opacity=0.3,
+            showlegend=False, legendgroup=bname,
+        ), row=2, col=1)
+
     fig.update_layout(
         template="plotly_white", font=dict(size=14),
         height=800, width=1200,
@@ -595,9 +660,12 @@ def run_stage_5(config_path: str = None):
         pass
     _flush("  Saved backtest_cumulative.html")
 
-    # 2. Rolling Sharpe comparison
+    # 2. Rolling Sharpe comparison (include benchmarks)
+    rolling_sharpe_data = dict(oos_returns_net)
+    for bname, bret in oos_benchmarks.items():
+        rolling_sharpe_data[bname] = bret
     plot_rolling_sharpe_comparison(
-        oos_returns_net, window=24,
+        rolling_sharpe_data, window=24,
         title="Rolling 24M Sharpe Ratio (Net of Costs)",
         save_path=fig_path, filename="backtest_rolling_sharpe.png",
     )
@@ -623,6 +691,16 @@ def run_stage_5(config_path: str = None):
         text=[f"{v:.3f}" for v in perf_df["Net Sharpe"]],
         textposition="outside",
     ))
+
+    # Add benchmark Sharpe reference lines
+    for bname, bret in oos_benchmarks.items():
+        bm_sharpe = _sharpe(bret)
+        fig2.add_vline(
+            x=bm_sharpe, line_dash="dash",
+            line_color=BENCHMARK_COLORS.get(bname, "#94a3b8"),
+            annotation_text=f"{bname} ({bm_sharpe:.2f})",
+            annotation_position="top",
+        )
 
     fig2.update_layout(
         title="Gross vs Net Sharpe Ratio (Rolling Backtest, OOS)",

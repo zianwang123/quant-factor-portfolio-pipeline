@@ -54,34 +54,43 @@ def _save_figure(fig, save_path, filename):
 def plot_efficient_frontier(
     mu: np.ndarray,
     sigma: np.ndarray,
-    gmv_weights: np.ndarray = None,
-    mvp_weights: np.ndarray = None,
-    rp_weights: np.ndarray = None,
+    portfolios: dict[str, np.ndarray] = None,
     rf: float = 0.0,
     asset_names: list = None,
+    gross_leverage: float = 3.0,
     title: str = "Efficient Frontier",
     save_path: Path = None,
     filename: str = "efficient_frontier.png",
 ):
-    """Plot mean-variance efficient frontier with key portfolios."""
+    """Plot mean-variance efficient frontier with key portfolios.
+
+    The frontier is generated with the same constraints as the actual optimizers:
+    allows shorting (w >= -2) and gross leverage up to `gross_leverage`.
+    """
     fig = go.Figure()
 
-    # Generate frontier points
+    # Generate frontier points with realistic constraints (matching our optimizers)
     n = len(mu)
     n_points = 100
     min_ret = mu.min()
     max_ret = mu.max()
-    target_returns = np.linspace(min_ret * 0.8, max_ret * 1.2, n_points)
+    target_returns = np.linspace(min_ret * 0.5, max_ret * 2.5, n_points)
 
     frontier_vols = []
     frontier_rets = []
 
+    import cvxpy as cp
     for target in target_returns:
         try:
-            import cvxpy as cp
             w = cp.Variable(n)
             objective = cp.Minimize(cp.quad_form(w, sigma))
-            constraints = [cp.sum(w) == 1, mu @ w >= target, w >= 0]
+            constraints = [
+                cp.sum(w) == 1,
+                mu @ w >= target,
+                w >= -2.0,
+                w <= 2.0,
+                cp.norm(w, 1) <= gross_leverage,
+            ]
             prob = cp.Problem(objective, constraints)
             prob.solve(solver=cp.SCS, verbose=False)
 
@@ -111,21 +120,26 @@ def plot_efficient_frontier(
         text=labels, textposition="top center",
     ))
 
-    # Special portfolios
-    def _add_portfolio(weights, name, color, symbol):
-        if weights is not None:
-            vol = np.sqrt(weights @ sigma @ weights) * np.sqrt(12)
-            ret = mu @ weights * 12
-            fig.add_trace(go.Scatter(
-                x=[vol], y=[ret],
-                mode="markers", name=name,
-                marker=dict(size=16, color=color, symbol=symbol,
-                            line=dict(width=2, color="black")),
-            ))
+    # Plot all portfolio points
+    SYMBOLS = ["circle", "square", "diamond", "star", "triangle-up",
+               "pentagon", "hexagon", "cross"]
+    COLORS_PORT = ["#16a34a", "#f59e0b", "#7c3aed", "#dc2626", "#06b6d4",
+                   "#ec4899", "#0e7490", "#f97316"]
 
-    _add_portfolio(gmv_weights, "GMV", PALETTE[2], "square")
-    _add_portfolio(mvp_weights, "Max Sharpe", PALETTE[3], "star")
-    _add_portfolio(rp_weights, "Risk Parity", PALETTE[1], "diamond")
+    if portfolios:
+        for i, (pname, weights) in enumerate(portfolios.items()):
+            if weights is not None:
+                vol = np.sqrt(weights @ sigma @ weights) * np.sqrt(12)
+                ret = mu @ weights * 12
+                fig.add_trace(go.Scatter(
+                    x=[vol], y=[ret],
+                    mode="markers", name=pname,
+                    marker=dict(
+                        size=14, color=COLORS_PORT[i % len(COLORS_PORT)],
+                        symbol=SYMBOLS[i % len(SYMBOLS)],
+                        line=dict(width=2, color="black"),
+                    ),
+                ))
 
     fig.update_layout(
         title=title,

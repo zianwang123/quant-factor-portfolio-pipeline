@@ -428,10 +428,9 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     try:
         plot_efficient_frontier(
             mu_is, sigma_is,
-            gmv_weights=our_portfolios.get("MVO"),
-            mvp_weights=our_portfolios.get("Max Sharpe"),
-            rp_weights=our_portfolios.get("Risk Parity"),
+            portfolios=our_portfolios,
             asset_names=selected_factors,
+            gross_leverage=3.0,
             title="Efficient Frontier (In-Sample, Selected Factors)",
             save_path=fig_path,
             filename="efficient_frontier.png",

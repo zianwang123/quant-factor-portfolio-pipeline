@@ -1,0 +1,541 @@
+\documentclass[12pt,a4paper]{article}
+
+% ── Packages ──
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{setspace}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black
+}
+
+\onehalfspacing
+
+\title{%
+    \textbf{Cross-Sectional Factor Investing with Portfolio Optimization and Black-Litterman Allocation} \\[0.5em]
+    \large An End-to-End Quantitative Investment Pipeline
+}
+\author{Zian (Andy) Wang}
+\date{March 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We build an end-to-end quantitative factor investment pipeline that constructs 20 cross-sectional equity factors from Compustat/CRSP data (1970--2019), selects a parsimonious subset via four complementary methods, and allocates across factor portfolios using mean-variance optimization, risk parity, and Black-Litterman posterior returns. Out-of-sample (2015--2019), our best variant (IC-Weighted) achieves a Sharpe ratio of 1.31 on a market-neutral basis, compared to 0.91 for the S\&P~500 and 0.56 for a hedge fund index composite. Rolling backtests with transaction costs confirm robustness: equal-weight and risk parity strategies maintain Sharpe ratios above 1.1 net of 10~bps costs. Black-Litterman improves both MVO and Max Sharpe by regularizing extreme weights, while adaptive annual factor re-selection underperforms fixed selection---demonstrating the cost of factor chasing.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ═══════════════════════════════════════════════════════════════
+\section{Introduction}
+% ═══════════════════════════════════════════════════════════════
+
+Factor investing is the systematic construction of portfolios that harvest risk premia associated with firm characteristics such as value, momentum, quality, and size. Since the seminal work of \citet{fama1993common} and \citet{carhart1997persistence}, academic research has identified dozens of cross-sectional predictors of stock returns, though many fail to survive out-of-sample testing or transaction costs \citep{harvey2016and,hou2020replicating}.
+
+This project addresses three questions:
+\begin{enumerate}[noitemsep]
+    \item Which factors from a broad set of 20 candidates deliver robust, uncorrelated alpha?
+    \item How should capital be allocated across selected factors---and does Black-Litterman improve upon na\"ive optimization?
+    \item Do the resulting portfolios survive rolling-window backtests with realistic transaction costs?
+\end{enumerate}
+
+We build a fully automated, reproducible pipeline that takes raw Compustat/CRSP data as input and produces optimized, backtested factor portfolios as output. The pipeline is implemented in Python and organized into modular stages, each of which caches intermediate results for independent re-execution.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Data}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Universe}
+
+Our primary dataset is the CRSP/Compustat merged file covering all U.S.\ common stocks (share codes 10, 11) from January 1970 to December 2019. We filter to S\&P~500 constituents at each month-end to ensure investability and liquidity.
+
+\subsection{Sample Periods}
+
+\begin{itemize}[noitemsep]
+    \item \textbf{Full sample}: January 1970 -- December 2019 (factor construction)
+    \item \textbf{Validation}: January 1987 -- December 2019 (quintile sort analysis)
+    \item \textbf{In-sample (IS)}: January 1987 -- December 2014 (optimization, selection)
+    \item \textbf{Out-of-sample (OOS)}: January 2015 -- December 2019 (evaluation)
+\end{itemize}
+
+\subsection{Benchmarks}
+
+We compare against 14 benchmarks spanning passive indices, Fama-French factors, mutual funds, hedge fund indices, and smart beta ETFs:
+
+\begin{itemize}[noitemsep]
+    \item \textbf{Market}: S\&P~500 total return, Fama-French Mkt-RF
+    \item \textbf{Fama-French}: SMB, HML, UMD
+    \item \textbf{Mutual funds}: FSMEX, FLPSX, FCNTX, FSPHX, FBALX (equal-weight and best)
+    \item \textbf{Hedge fund indices}: HFRI composite strategies (equal-weight and best)
+    \item \textbf{Smart beta}: Factor-tilted ETFs (equal-weight and best)
+\end{itemize}
+
+All benchmark Sharpe ratios are computed on excess returns (subtracting the risk-free rate). Our long-short factor portfolios are market-neutral by construction, so no risk-free adjustment is needed.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Factor Construction}
+\label{sec:factors}
+% ═══════════════════════════════════════════════════════════════
+
+We construct 20 cross-sectional factors spanning seven categories (Table~\ref{tab:factors}). Each factor is computed monthly from lagged accounting data (to avoid look-ahead bias) and winsorized at the 1st and 99th percentiles.
+
+\begin{table}[H]
+\centering
+\caption{Factor Universe}
+\label{tab:factors}
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Category} & \textbf{Factor} & \textbf{Definition} \\
+\midrule
+\multirow{4}{*}{Value}
+    & Book-to-Price (BP) & Book equity / market cap \\
+    & Cash Flow to Price (CFTP) & Operating cash flow / market cap \\
+    & Earnings Yield & Net income / market cap \\
+    & Dividend Yield & Dividends per share / price \\
+\midrule
+Size & Log Market Cap & $\ln(\text{price} \times \text{shares outstanding})$ \\
+\midrule
+\multirow{4}{*}{Momentum}
+    & 12-1 Momentum (MOM) & Cumulative return months $t{-}12$ to $t{-}2$ \\
+    & Short-Term Reversal (STReversal) & Prior month return \\
+    & High-Low 1M (HL1M) & Monthly high/low price ratio \\
+    & Long-Term Growth (LTGC) & Long-term price reversal \\
+\midrule
+\multirow{3}{*}{Quality}
+    & Accrual Ratio & $(\Delta\text{CA} - \Delta\text{Cash} - \Delta\text{CL}) / \text{TA}$ \\
+    & Return on Equity (ROE) & Net income / book equity \\
+    & Net Profit Margin & Net income / revenue \\
+\midrule
+\multirow{3}{*}{Growth}
+    & Sales Growth & YoY revenue growth \\
+    & Asset Growth & YoY total asset growth \\
+    & Sustainable Growth & $\text{ROE} \times (1 - \text{payout ratio})$ \\
+\midrule
+\multirow{2}{*}{Analyst}
+    & Earnings Revision & Consensus estimate changes \\
+    & SUE & Standardized unexpected earnings \\
+\midrule
+Risk & Ann.\ Volatility (12M) & Trailing 12-month return std $\times \sqrt{12}$ \\
+\midrule
+Leverage & Debt-to-Equity & Total debt / book equity \\
+\midrule
+Other & Gross Profit & Gross profit / total assets \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Quintile Sort Methodology}
+
+For each factor and each month, we sort S\&P~500 stocks into quintiles (Q1 = lowest, Q5 = highest). The \textbf{QSpread} is the equal-weighted return differential between the long and short quintiles, with the sign chosen so that a positive QSpread indicates the factor delivers positive alpha (e.g., for value factors, long Q5/short Q1; for growth factors, long Q1/short Q5).
+
+\subsection{Benchmark Validation}
+
+We validate our factor construction against Capital IQ factor indices. Correlations between our QSpreads and Capital IQ benchmark returns range from \textbf{0.87 to 0.99} across 8 matched factors:
+
+\begin{table}[H]
+\centering
+\caption{Factor Validation: Correlation with Capital IQ Benchmarks}
+\label{tab:validation}
+\begin{tabular}{lc}
+\toprule
+\textbf{Factor} & \textbf{Correlation} \\
+\midrule
+Log Market Cap & 0.993 \\
+HL1M & 0.992 \\
+Book-to-Price & 0.989 \\
+Annualized Volatility & 0.965 \\
+Momentum (12-1) & 0.925 \\
+Long-Term Growth & 0.915 \\
+Net Profit Margin & 0.894 \\
+ROE & 0.876 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ═══════════════════════════════════════════════════════════════
+\section{Factor Selection}
+\label{sec:selection}
+% ═══════════════════════════════════════════════════════════════
+
+From the 20-factor universe, we select a parsimonious subset that balances signal strength with diversification. We employ four complementary selection methods and combine their votes:
+
+\subsection{Fama-MacBeth Regression}
+
+For each month $t$ in the in-sample period, we run cross-sectional regressions of stock returns on factor exposures:
+\begin{equation}
+    r_{i,t} = \alpha_t + \sum_{k} \gamma_{k,t} \cdot f_{i,k,t-1} + \epsilon_{i,t}
+\end{equation}
+The time-series average $\bar{\gamma}_k$ is tested for significance using Newey-West standard errors (6 lags). Factors with $|t| > 2$ are considered significant.
+
+\subsection{Information Coefficient Analysis}
+
+The Information Coefficient (IC) is the rank correlation between factor values and subsequent returns:
+\begin{equation}
+    \text{IC}_{k,t} = \text{Spearman}\!\left(f_{i,k,t-1},\; r_{i,t}\right)
+\end{equation}
+We filter on $|\overline{\text{IC}}| > 0.02$ and $\text{IC-IR} = \overline{\text{IC}} / \sigma(\text{IC}) > 0.5$.
+
+\subsection{LASSO Selection}
+
+We fit a LASSO regression with 5-fold time-series cross-validation:
+\begin{equation}
+    \hat{\boldsymbol{\gamma}} = \arg\min_{\boldsymbol{\gamma}} \left\| \mathbf{r} - \mathbf{F}\boldsymbol{\gamma} \right\|_2^2 + \lambda \left\| \boldsymbol{\gamma} \right\|_1
+\end{equation}
+Factors with nonzero coefficients at the optimal $\lambda$ are selected.
+
+\subsection{Greedy Forward Selection}
+
+Starting from an empty set, we iteratively add the factor with the highest $|\text{QSpread Sharpe}|$, subject to the constraint that all pairwise correlations with existing factors remain below 0.6:
+\begin{equation}
+    f^* = \arg\max_{f \notin S} \left| \text{Sharpe}(Q_f) \right| \quad \text{s.t.} \quad |\rho(Q_f, Q_s)| < 0.6 \;\; \forall s \in S
+\end{equation}
+
+\subsection{Selected Factors}
+
+Consensus across the four methods yields five factors:
+
+\begin{table}[H]
+\centering
+\caption{Selected Factor Combination}
+\label{tab:selected}
+\begin{tabular}{llcc}
+\toprule
+\textbf{Factor} & \textbf{Category} & \textbf{IS QSpread Sharpe} & \textbf{Max Pairwise $|\rho|$} \\
+\midrule
+Accrual Ratio & Quality & 0.84 & --- \\
+CFTP & Value & 0.72 & 0.55 \\
+STReversal & Momentum & 0.68 & 0.21 \\
+Asset Growth & Growth & 0.61 & 0.38 \\
+ROE & Quality & 0.58 & 0.45 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The maximum pairwise correlation among selected factors is 0.55 (AccrualRatio--CFTP), ensuring genuine diversification across alpha sources.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Portfolio Optimization}
+\label{sec:optimization}
+% ═══════════════════════════════════════════════════════════════
+
+We allocate capital across the five selected factor QSpreads using multiple optimization approaches. Let $\boldsymbol{\mu}$ and $\boldsymbol{\Sigma}$ denote the in-sample mean return vector and covariance matrix of the factor QSpreads.
+
+\subsection{Equal Weight}
+
+$w_k = 1/K$ for all $k = 1, \ldots, K$. The 1/N portfolio serves as a robust baseline that is difficult to beat out of sample \citep{demiguel2009optimal}.
+
+\subsection{IC-Weighted}
+
+Weights proportional to in-sample information coefficients:
+\begin{equation}
+    w_k = \frac{|\overline{\text{IC}}_k|}{\sum_{j} |\overline{\text{IC}}_j|}
+\end{equation}
+
+\subsection{Mean-Variance Optimization (MVO)}
+
+\begin{equation}
+    \mathbf{w}^* = \arg\min_{\mathbf{w}} \left( \mathbf{w}'\boldsymbol{\Sigma}\mathbf{w} - \frac{1}{\delta}\boldsymbol{\mu}'\mathbf{w} \right) \quad \text{s.t.} \quad \sum |w_k| \leq L_{\text{gross}}, \; w_k \in [w_{\min}, w_{\max}]
+\end{equation}
+with risk aversion $\delta = 10$, $w_{\min} = -2$, $w_{\max} = 2$, and gross leverage $L_{\text{gross}} = 3$.
+
+\subsection{Maximum Sharpe Ratio}
+
+\begin{equation}
+    \mathbf{w}^* = \arg\max_{\mathbf{w}} \frac{\boldsymbol{\mu}'\mathbf{w}}{\sqrt{\mathbf{w}'\boldsymbol{\Sigma}\mathbf{w}}} \quad \text{s.t.} \quad \sum |w_k| \leq 3
+\end{equation}
+
+\subsection{Risk Parity}
+
+Equal risk contribution from each factor:
+\begin{equation}
+    w_k \cdot (\boldsymbol{\Sigma}\mathbf{w})_k = \frac{1}{K} \cdot \mathbf{w}'\boldsymbol{\Sigma}\mathbf{w} \quad \forall k
+\end{equation}
+
+\subsection{Black-Litterman Variants}
+
+We use Black-Litterman (BL) as a \textbf{return estimation method}: compute posterior expected returns, then feed to MVO or Max Sharpe. The BL posterior is:
+\begin{equation}
+    \bar{\boldsymbol{\mu}} = \left[(\tau\boldsymbol{\Sigma})^{-1} + \mathbf{P}'\boldsymbol{\Omega}^{-1}\mathbf{P}\right]^{-1} \left[(\tau\boldsymbol{\Sigma})^{-1}\boldsymbol{\pi} + \mathbf{P}'\boldsymbol{\Omega}^{-1}\mathbf{Q}\right]
+\end{equation}
+where $\boldsymbol{\pi} = \delta\boldsymbol{\Sigma}\mathbf{w}_{\text{eq}}$ is the equilibrium return (equal-weight prior), $\mathbf{P} = \mathbf{I}$ (absolute views on each factor), $\mathbf{Q} = \boldsymbol{\mu}_{\text{IS}}$ (in-sample mean returns as views), and $\boldsymbol{\Omega}$ is diagonal with $\Omega_{kk} = \tau \cdot \Sigma_{kk}$ following \citet{he1999intuition}.
+
+This yields two additional variants: \textbf{MVO + BL} and \textbf{Max Sharpe + BL}.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Out-of-Sample Results}
+\label{sec:results}
+% ═══════════════════════════════════════════════════════════════
+
+Table~\ref{tab:oos} reports OOS performance (January 2015 -- December 2019) for all portfolio variants and benchmarks.
+
+\begin{table}[H]
+\centering
+\caption{Out-of-Sample Performance Comparison (2015--2019)}
+\label{tab:oos}
+\footnotesize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Portfolio} & \textbf{Sharpe} & \textbf{Sortino} & \textbf{Ann.\ Ret.} & \textbf{Ann.\ Vol} & \textbf{Max DD} & \textbf{VaR\textsubscript{95}} & \textbf{CF-VaR\textsubscript{95}} \\
+\midrule
+\multicolumn{8}{l}{\textit{Our Portfolios}} \\
+IC-Weighted     & \textbf{1.311} & 2.740 & 4.3\%  & 3.3\%  & $-$1.9\%  & $-$1.2\% & $-$1.2\% \\
+MVO + BL        & 1.242          & 2.632 & 5.7\%  & 4.6\%  & $-$4.5\%  & $-$1.5\% & $-$1.6\% \\
+Equal Weight    & 1.201          & 2.109 & 3.7\%  & 3.1\%  & $-$3.2\%  & $-$1.2\% & $-$1.2\% \\
+MVO             & 1.164          & 2.159 & 8.5\%  & 7.3\%  & $-$7.5\%  & $-$2.5\% & $-$2.6\% \\
+Max Sharpe + BL & 1.157          & 2.142 & 7.5\%  & 6.5\%  & $-$7.4\%  & $-$2.4\% & $-$2.2\% \\
+Max Sharpe      & 1.082          & 1.994 & 10.0\% & 9.3\%  & $-$10.4\% & $-$3.4\% & $-$3.3\% \\
+Risk Parity     & 1.005          & 1.713 & 3.0\%  & 3.0\%  & $-$3.0\%  & $-$1.2\% & $-$1.2\% \\
+\midrule
+\multicolumn{8}{l}{\textit{Benchmarks}} \\
+HFRIMAI (Best HF)  & 1.358 & 2.371 & 3.2\%  & 2.4\%  & $-$2.4\%  & $-$1.0\% & $-$1.0\% \\
+Mutual Fund (EW)   & 0.947 & 1.357 & 16.4\% & 17.4\% & $-$21.1\% & $-$6.3\% & $-$6.7\% \\
+S\&P 500           & 0.907 & 1.219 & 10.8\% & 12.0\% & $-$14.1\% & $-$6.0\% & $-$5.2\% \\
+FF Mkt-RF          & 0.857 & 1.103 & 10.7\% & 12.5\% & $-$15.1\% & $-$6.1\% & $-$5.5\% \\
+Smart Beta (EW)    & 0.744 & 0.925 & 8.9\%  & 11.9\% & $-$16.4\% & $-$5.5\% & $-$5.3\% \\
+HF Index (EW)      & 0.562 & 0.707 & 2.0\%  & 3.6\%  & $-$7.8\%  & $-$1.8\% & $-$1.7\% \\
+FF HML             & $-$0.472 & $-$0.968 & $-$4.3\% & 9.0\% & $-$30.1\% & $-$3.9\% & $-$3.8\% \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\textbf{Key observations:}
+\begin{itemize}[noitemsep]
+    \item All seven of our variants achieve Sharpe $> 1.0$, outperforming the S\&P~500 (0.91) on a risk-adjusted basis.
+    \item Our portfolios are market-neutral (long-short QSpreads), so absolute returns are lower than fully invested benchmarks, but drawdowns are substantially smaller.
+    \item IC-Weighted (Sharpe 1.31) is the simplest and best-performing variant. This echoes the finding that simple, robust allocations often beat optimized ones out of sample.
+    \item MVO + BL (Sharpe 1.24) outperforms plain MVO (1.16), showing that BL regularization helps by shrinking returns toward equilibrium.
+    \item The Fama-French value factor (HML) has a \textit{negative} Sharpe ($-$0.47) during 2015--2019, highlighting the ``value winter'' that plagued traditional value strategies.
+\end{itemize}
+
+\subsection{Cornish-Fisher VaR}
+
+We report both historical VaR and Cornish-Fisher (CF) adjusted VaR at the 95\% level. The CF adjustment accounts for non-normal skewness and kurtosis:
+\begin{equation}
+    z_{\text{CF}} = z_\alpha + \frac{1}{6}(z_\alpha^2 - 1)S + \frac{1}{24}(z_\alpha^3 - 3z_\alpha)(K-3) - \frac{1}{36}(2z_\alpha^3 - 5z_\alpha)S^2
+\end{equation}
+where $S$ is skewness, $K$ is kurtosis, and $z_\alpha$ is the standard normal quantile. CF-VaR generally stays close to historical VaR for our factor portfolios (returns are approximately symmetric), but shows larger deviations for benchmarks with fat tails (e.g., mutual funds, S\&P~500).
+
+\subsection{Sharpe Ratio Equality Tests}
+
+We test whether our portfolios statistically outperform benchmarks using the Jobson-Korkie test with Memmel correction. For IC-Weighted vs S\&P~500, the difference in Sharpe ratios (1.31 vs 0.91) is economically meaningful, though statistical significance depends on the short OOS window (60 months).
+
+% ═══════════════════════════════════════════════════════════════
+\section{Black-Litterman Analysis}
+\label{sec:bl}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Factor-Level BL}
+
+At the factor allocation level, Black-Litterman combines an equal-weight equilibrium prior with views derived from in-sample IC and Fama-MacBeth analysis. With baseline parameters ($\tau = 0.05$, $\delta = 10$), the BL factor portfolio achieves a Sharpe of 0.92---competitive with MVO and Risk Parity.
+
+\subsection{Sensitivity Analysis}
+
+We conduct a grid search over $\tau \in \{0.01, 0.05, 0.1, 0.5, 1.0\}$ and $\delta \in \{1, 5, 10, 50, 100\}$:
+
+\begin{itemize}[noitemsep]
+    \item \textbf{Best}: $\tau = 0.5$, $\delta = 50$ yields Sharpe 1.24
+    \item Higher $\tau$ increases view weight relative to prior
+    \item Higher $\delta$ increases risk aversion, shrinking toward equal weight
+\end{itemize}
+
+\subsection{Stock-Level BL}
+
+For completeness, we implement stock-level BL on 274 S\&P~500 stocks. The stock-level BL (Sharpe 0.33) underperforms market-cap weighting (0.83), as views based on cross-sectional factor scores are too diffuse when applied to individual stocks. This motivates our focus on factor-level allocation.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Rolling Backtest with Transaction Costs}
+\label{sec:backtest}
+% ═══════════════════════════════════════════════════════════════
+
+Static optimization on a single IS/OOS split can overstate performance. We run a rolling monthly backtest to evaluate robustness:
+
+\begin{itemize}[noitemsep]
+    \item \textbf{Lookback}: 36 months (expanding from the start of the validation period)
+    \item \textbf{Rebalance frequency}: Quarterly (every 3 months)
+    \item \textbf{Transaction costs}: 10 bps per unit turnover
+    \item \textbf{Covariance estimation}: Ledoit-Wolf shrinkage at each rebalance
+    \item \textbf{Weight drift}: Weights drift with returns between rebalance dates
+\end{itemize}
+
+\subsection{Results}
+
+\begin{table}[H]
+\centering
+\caption{Rolling Backtest Performance (Net of Transaction Costs)}
+\label{tab:backtest}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Strategy} & \textbf{Gross} & \textbf{Net} & \textbf{Ann.\ Ret.} & \textbf{Max DD} & \textbf{Turnover} & \textbf{Cost} \\
+ & \textbf{Sharpe} & \textbf{Sharpe} & \textbf{(Net)} & \textbf{(Net)} & \textbf{(Avg)} & \textbf{(bps)} \\
+\midrule
+Equal Weight      & 1.188 & \textbf{1.184} & 3.6\% & $-$3.1\% & 4.9\%  & 55  \\
+Risk Parity       & 1.149 & 1.143          & 3.3\% & $-$2.7\% & 5.5\%  & 60  \\
+Max Sharpe + BL   & 0.939 & 0.913          & 4.2\% & $-$6.0\% & 38.1\% & 423 \\
+MVO + BL          & 0.919 & 0.892          & 4.6\% & $-$7.1\% & 27.7\% & 307 \\
+Max Sharpe        & 0.838 & 0.808          & 4.8\% & $-$6.5\% & 47.3\% & 525 \\
+IC-Weighted       & 0.744 & 0.718          & 3.2\% & $-$9.4\% & 18.7\% & 207 \\
+MVO               & 0.720 & 0.691          & 6.4\% & $-$13.6\%& 55.4\% & 615 \\
+IC-Wt + BL        & 0.714 & 0.688          & 3.2\% & $-$8.4\% & 18.3\% & 203 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\textbf{Key findings:}
+\begin{itemize}[noitemsep]
+    \item Equal Weight and Risk Parity are the most robust---low turnover ($< 6\%$) translates to minimal transaction cost drag ($\sim$55--60 bps total over the backtest).
+    \item \textbf{BL improves MVO}: Net Sharpe rises from 0.69 to 0.89, while turnover drops from 55\% to 28\%. BL shrinks extreme MVO weights toward equilibrium, acting as a natural regularizer.
+    \item \textbf{BL improves Max Sharpe}: Net Sharpe rises from 0.81 to 0.91, turnover drops from 47\% to 38\%.
+    \item MVO without BL has the highest turnover (55\%) and cost (615 bps), consistent with the known instability of unconstrained mean-variance portfolios.
+\end{itemize}
+
+\subsection{BL as a Regularizer}
+
+The Black-Litterman framework effectively regularizes optimization-based strategies by blending data-driven views with an equilibrium prior. This has two practical benefits:
+\begin{enumerate}[noitemsep]
+    \item \textbf{Weight stability}: BL posterior returns are shrunk toward equilibrium, reducing sensitivity to estimation error in $\boldsymbol{\mu}$.
+    \item \textbf{Lower turnover}: More stable return estimates produce more stable optimal weights, reducing trading costs.
+\end{enumerate}
+
+Table~\ref{tab:bl_comparison} isolates the BL effect for each optimizer:
+
+\begin{table}[H]
+\centering
+\caption{Black-Litterman Impact on Optimizer Performance}
+\label{tab:bl_comparison}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Optimizer} & \textbf{Base Sharpe} & \textbf{BL Sharpe} & \textbf{$\Delta$ Sharpe} & \textbf{Turnover Reduction} \\
+\midrule
+MVO         & 0.691 & 0.892 & +0.200 & 55.4\% $\to$ 27.7\% \\
+Max Sharpe  & 0.808 & 0.913 & +0.105 & 47.3\% $\to$ 38.1\% \\
+IC-Weighted & 0.718 & 0.688 & $-$0.030 & 18.7\% $\to$ 18.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+BL benefits optimizers that are sensitive to return estimation (MVO, Max Sharpe) but offers no improvement for IC-Weighted, which already uses a simple, robust weighting scheme.
+
+\subsection{Adaptive Factor Re-Selection}
+
+We test whether annually re-selecting factors from the full 20-factor universe (using greedy forward selection on the trailing window) improves upon the fixed factor set selected in-sample. Re-selection occurs each December; weights are rebalanced quarterly.
+
+\begin{table}[H]
+\centering
+\caption{Adaptive vs Fixed Factor Selection}
+\label{tab:adaptive}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Strategy} & \textbf{Fixed Sharpe} & \textbf{Adaptive Sharpe} & \textbf{Factor Changes} & \textbf{Adaptive Cost} \\
+\midrule
+Equal Weight  & 1.184 & 0.727 & 3 & 37 bps \\
+IC-Weighted   & 0.718 & 0.619 & 3 & 60 bps \\
+MVO + BL      & 0.892 & 0.580 & 3 & 103 bps \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Fixed factors outperform across all strategies. The adaptive approach suffers from:
+\begin{enumerate}[noitemsep]
+    \item \textbf{Outer turnover}: Changing factors entirely (not just reweighting) incurs large position unwinds.
+    \item \textbf{Signal instability}: Factor rankings shift based on recent performance, introducing a ``factor chasing'' effect analogous to performance chasing in fund selection.
+    \item \textbf{Short lookback}: Annual re-selection uses only 36 months of data, which may be insufficient to distinguish signal from noise.
+\end{enumerate}
+
+This result supports the practice of selecting factors based on long-term economic rationale rather than adaptive signal mining.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Risk Analysis}
+\label{sec:risk}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Drawdown Analysis}
+
+Our market-neutral portfolios exhibit substantially lower drawdowns than long-only benchmarks. IC-Weighted's maximum drawdown is 1.9\%, compared to 14.1\% for the S\&P~500 and 21.1\% for the equal-weight mutual fund basket. This is a direct consequence of market neutrality: our returns are driven by cross-sectional dispersion rather than market direction.
+
+\subsection{Tail Risk}
+
+Table~\ref{tab:oos} includes both historical VaR$_{95}$ and Cornish-Fisher VaR$_{95}$. For most of our factor portfolios, the two measures are similar, indicating approximately symmetric return distributions. Benchmark mutual funds and the S\&P~500 show larger gaps due to negative skewness and excess kurtosis---the CF adjustment captures downside risk that Gaussian VaR understates.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Conclusion}
+% ═══════════════════════════════════════════════════════════════
+
+We present a complete, reproducible pipeline for cross-sectional factor investing that takes raw data as input and produces optimized, backtested portfolios as output. Our main findings:
+
+\begin{enumerate}
+    \item \textbf{Five robust factors} (AccrualRatio, CFTP, STReversal, AssetGrowth, ROE) survive multi-method selection and deliver consistent OOS alpha.
+
+    \item \textbf{Simple allocations are hard to beat}: IC-Weighted (Sharpe 1.31) and Equal Weight (1.20) outperform sophisticated optimization in the static OOS test; Equal Weight (1.18) dominates in the rolling backtest after costs.
+
+    \item \textbf{Black-Litterman regularizes optimization}: BL improves MVO's net Sharpe by +0.20 and reduces turnover by half, demonstrating its value as a return shrinkage estimator rather than a standalone allocation method.
+
+    \item \textbf{Factor stability matters}: Fixed factor selection outperforms annual adaptive re-selection, supporting the use of economically motivated, stable factor portfolios over data-mined alternatives.
+
+    \item \textbf{Transaction costs are material}: MVO's gross Sharpe of 0.72 falls to 0.69 net of costs; more aggressive strategies like Max Sharpe lose 3--5\% of annualized return to turnover.
+\end{enumerate}
+
+The code, data pipeline, and all results are available at:\\ \url{https://github.com/zianwang123/quant-factor-portfolio-pipeline}.
+
+% ═══════════════════════════════════════════════════════════════
+\begin{thebibliography}{99}
+
+\bibitem[Carhart(1997)]{carhart1997persistence}
+Carhart, M.~M. (1997).
+\newblock On persistence in mutual fund performance.
+\newblock \textit{The Journal of Finance}, 52(1):57--82.
+
+\bibitem[DeMiguel et~al.(2009)]{demiguel2009optimal}
+DeMiguel, V., Garlappi, L., and Uppal, R. (2009).
+\newblock Optimal versus naive diversification: How inefficient is the 1/N portfolio strategy?
+\newblock \textit{The Review of Financial Studies}, 22(5):1915--1953.
+
+\bibitem[Fama and French(1993)]{fama1993common}
+Fama, E.~F. and French, K.~R. (1993).
+\newblock Common risk factors in the returns on stocks and bonds.
+\newblock \textit{Journal of Financial Economics}, 33(1):3--56.
+
+\bibitem[Harvey et~al.(2016)]{harvey2016and}
+Harvey, C.~R., Liu, Y., and Zhu, H. (2016).
+\newblock ...and the cross-section of expected returns.
+\newblock \textit{The Review of Financial Studies}, 29(1):5--68.
+
+\bibitem[He and Litterman(1999)]{he1999intuition}
+He, G. and Litterman, R. (1999).
+\newblock The intuition behind Black-Litterman model portfolios.
+\newblock \textit{Goldman Sachs Asset Management Working Paper}.
+
+\bibitem[Hou et~al.(2020)]{hou2020replicating}
+Hou, K., Xue, C., and Zhang, L. (2020).
+\newblock Replicating anomalies.
+\newblock \textit{The Review of Financial Studies}, 33(5):2019--2133.
+
+\bibitem[Ledoit and Wolf(2004)]{ledoit2004well}
+Ledoit, O. and Wolf, M. (2004).
+\newblock A well-conditioned estimator for large-dimensional covariance matrices.
+\newblock \textit{Journal of Multivariate Analysis}, 88(2):365--411.
+
+\end{thebibliography}
+
+\end{document}

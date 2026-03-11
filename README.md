@@ -2,7 +2,7 @@
 
 End-to-end quantitative factor investment pipeline: from alpha discovery through portfolio optimization to out-of-sample backtesting with transaction costs.
 
-Built as an independent research project extending coursework from RSM6308 (factor investing, portfolio optimization, Black-Litterman allocation).
+> **Note**: This is an enhanced independent research project originally developed from group coursework in RSM6308 (factor investing, portfolio optimization, and Black-Litterman allocation). The original course projects covered basic factor construction, simple portfolio optimization, and introductory Black-Litterman — this repo significantly extends and rewrites those foundations with a full rolling backtest framework, transaction cost modeling, adaptive factor re-selection, BL as a return estimator across multiple optimizers, Cornish-Fisher VaR, and comprehensive visualization. **This project may contain errors** — it is intended for educational and research purposes only. See [Disclaimer](#disclaimer) below.
 
 ## Key Results (OOS: 2015–2019)
 
@@ -173,6 +173,16 @@ Raw data files are not included in the repository.
 - Plotly for interactive HTML charts + Kaleido for static PNG export
 - PyYAML for configuration
 
+## Disclaimer
+
+**This project is for educational and research purposes only. It does not constitute financial advice, investment recommendation, or solicitation to buy or sell any securities.**
+
+- This codebase originated from university coursework (RSM6308) and has been independently extended by the author. It may contain errors, bugs, or methodological oversights.
+- Past performance shown in backtests does not guarantee future results. Backtested results are hypothetical, do not reflect actual trading, and may overstate real-world performance.
+- The raw data (Compustat/CRSP, Capital IQ benchmarks, HFRI indices) used in this project is proprietary and **not included** in this repository. Users must obtain their own data licenses from the respective providers (S&P Global, CRSP, Hedge Fund Research, etc.).
+- The author makes no representations or warranties regarding the accuracy, completeness, or reliability of the code or results.
+- Use at your own risk. The author is not liable for any financial losses or damages resulting from the use of this software.
+
 ## License
 
-Private repository — not for redistribution.
+This project is licensed under the [MIT License](LICENSE).

@@ -26,9 +26,10 @@ from src.analytics.performance import (
     max_drawdown, sortino_ratio, calmar_ratio,
 )
 from src.analytics.risk import (
-    historical_var, cvar, drawdown_stats,
+    historical_var, cvar, cornish_fisher_var, drawdown_stats,
 )
 from src.analytics.statistical_tests import sharpe_ratio_test
+from src.visualization.portfolio_plots import plot_efficient_frontier
 
 
 def _parse_ff_sheet(df: pd.DataFrame) -> pd.DataFrame:
@@ -314,6 +315,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
         dd = drawdown_stats(r)
         var_95 = historical_var(r, 0.95)
         cvar_95 = cvar(r, 0.95)
+        cf_var_95 = cornish_fisher_var(r, 0.95)
 
         comparison[name] = {
             "Ann. Return": ann_ret,
@@ -325,6 +327,7 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
             "DD Duration (mo)": dd.get("Max Drawdown Duration (months)", 0),
             "VaR 95%": var_95,
             "CVaR 95%": cvar_95,
+            "CF-VaR 95%": cf_var_95,
         }
 
     comp_df = pd.DataFrame(comparison).T
@@ -381,6 +384,23 @@ def run_stage_3(config_path: str = None, factors: dict = None, qspreads: dict = 
     is_df = pd.DataFrame(is_comparison).T
     is_df.to_csv(tables_path / "factor_portfolio_in_sample.csv")
     print(f"  [DUMP] factor_portfolio_in_sample.csv saved"); _flush()
+
+    # Efficient frontier plot
+    print("  Generating efficient frontier plot...")
+    try:
+        plot_efficient_frontier(
+            mu_is, sigma_is,
+            gmv_weights=our_portfolios.get("MVO"),
+            mvp_weights=our_portfolios.get("Max Sharpe"),
+            rp_weights=our_portfolios.get("Risk Parity"),
+            asset_names=selected_factors,
+            title="Efficient Frontier (In-Sample, Selected Factors)",
+            save_path=fig_path,
+            filename="efficient_frontier.png",
+        )
+        print("  Saved efficient_frontier.html")
+    except Exception as e:
+        print(f"  Efficient frontier plot failed: {e}")
 
     print(f"\nStage 3 complete. Results saved to {tables_path} and {fig_path}")
     return {

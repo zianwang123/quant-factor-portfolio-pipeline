@@ -146,6 +146,212 @@ def risk_parity_optimizer(mu, sigma, **kwargs):
     return risk_parity(sigma)
 
 
+# ── Adaptive factor selection helpers ──
+
+def select_factors_from_window(
+    qspreads_window: pd.DataFrame,
+    n_factors: int = 5,
+    max_corr: float = 0.6,
+) -> list[str]:
+    """Select top factors from a lookback window based on QSpread Sharpe + low correlation.
+
+    Greedy forward selection: pick factors with highest Sharpe ratio that are
+    not too correlated with already-selected factors.
+    """
+    # Score each factor by in-window Sharpe
+    mu = qspreads_window.mean()
+    vol = qspreads_window.std()
+    sharpe = (mu / vol).replace([np.inf, -np.inf], 0).fillna(0)
+
+    # Sort by |Sharpe| descending
+    candidates = sharpe.abs().sort_values(ascending=False).index.tolist()
+
+    # Correlation matrix
+    corr = qspreads_window.corr()
+
+    selected = []
+    for factor in candidates:
+        if len(selected) >= n_factors:
+            break
+        # Check correlation with all already-selected factors
+        too_correlated = False
+        for sel in selected:
+            if abs(corr.loc[factor, sel]) > max_corr:
+                too_correlated = True
+                break
+        if not too_correlated:
+            selected.append(factor)
+
+    return selected
+
+
+def run_adaptive_backtest(
+    all_qspreads: pd.DataFrame,
+    optimizer_func,
+    lookback_months: int = 60,
+    reselection_freq: int = 12,  # months between factor re-selection
+    rebalance_freq: str = "quarterly",
+    transaction_cost_bps: float = 10.0,
+    n_factors: int = 5,
+    max_corr: float = 0.6,
+    **optimizer_kwargs,
+) -> dict:
+    """Rolling backtest with periodic factor re-selection.
+
+    Two layers of turnover:
+    - Inner: weight changes within the same factor set (quarterly)
+    - Outer: factor set changes (annual) — requires full portfolio reconstruction
+
+    Args:
+        all_qspreads: DataFrame of ALL factor QSpreads (not just selected).
+        optimizer_func: Weight optimizer function.
+        lookback_months: Lookback window for estimation.
+        reselection_freq: Months between factor re-selection (12 = annual).
+        rebalance_freq: Weight rebalance frequency.
+        transaction_cost_bps: Transaction cost in basis points.
+        n_factors: Number of factors to select.
+        max_corr: Max pairwise correlation for factor selection.
+        **optimizer_kwargs: Passed to optimizer.
+
+    Returns:
+        dict with portfolio_returns, factor_changes, turnover stats, etc.
+    """
+    from src.portfolio.covariance import ledoit_wolf_shrinkage
+
+    tc_rate = transaction_cost_bps / 10000.0
+    dates = all_qspreads.index.tolist()
+
+    # Determine rebalance dates (quarterly)
+    if rebalance_freq == "quarterly":
+        rebalance_dates = set(d for d in dates[lookback_months:] if d.month in [3, 6, 9, 12])
+    elif rebalance_freq == "monthly":
+        rebalance_dates = set(dates[lookback_months:])
+    else:  # annual
+        rebalance_dates = set(d for d in dates[lookback_months:] if d.month == 12)
+
+    # Re-selection dates (annual — every December)
+    reselection_dates = set(d for d in dates[lookback_months:] if d.month == 12)
+
+    portfolio_returns = {}
+    factor_history = {}   # date -> list of selected factors
+    weight_history = {}
+    inner_turnover = {}   # weight changes within same factor set
+    outer_turnover = {}   # factor set changes
+    cost_series = {}
+
+    current_factors = None
+    current_weights = None  # dict: factor_name -> weight
+
+    for i, date in enumerate(dates):
+        if i < lookback_months:
+            continue
+
+        window = all_qspreads.iloc[i - lookback_months:i]
+
+        # ── Annual factor re-selection ──
+        if date in reselection_dates or current_factors is None:
+            new_factors = select_factors_from_window(
+                window, n_factors=n_factors, max_corr=max_corr,
+            )
+            factor_history[date] = new_factors
+
+            if current_factors is not None:
+                # Measure factor turnover
+                old_set = set(current_factors)
+                new_set = set(new_factors)
+                added = new_set - old_set
+                dropped = old_set - new_set
+                outer_turnover[date] = {
+                    "added": list(added),
+                    "dropped": list(dropped),
+                    "n_changed": len(added) + len(dropped),
+                }
+
+            current_factors = new_factors
+
+            # Force rebalance on re-selection
+            rebalance_dates.add(date)
+
+        # ── Quarterly weight rebalance ──
+        if date in rebalance_dates and current_factors:
+            factor_window = window[current_factors].dropna(axis=1, how="any")
+            valid_factors = factor_window.columns.tolist()
+
+            if len(valid_factors) >= 2 and factor_window.shape[0] >= 20:
+                try:
+                    mu = factor_window.mean().values
+                    sigma = ledoit_wolf_shrinkage(factor_window).values
+
+                    new_w = optimizer_func(mu=mu, sigma=sigma, **optimizer_kwargs)
+                    new_weights = {f: w for f, w in zip(valid_factors, new_w)}
+
+                    # Compute turnover (including factor changes)
+                    if current_weights is not None:
+                        all_factors = set(list(current_weights.keys()) + list(new_weights.keys()))
+                        turnover = sum(
+                            abs(new_weights.get(f, 0) - current_weights.get(f, 0))
+                            for f in all_factors
+                        )
+                    else:
+                        turnover = sum(abs(w) for w in new_weights.values())
+
+                    inner_turnover[date] = turnover
+                    cost = turnover * tc_rate
+                    cost_series[date] = cost
+
+                    current_weights = new_weights
+                    weight_history[date] = new_weights
+
+                except Exception as e:
+                    pass
+
+        # ── Compute return ──
+        if current_weights:
+            period_ret = 0
+            period_returns_vec = {}
+            for f, w in current_weights.items():
+                if f in all_qspreads.columns:
+                    r = all_qspreads.loc[date, f]
+                    if not np.isnan(r):
+                        period_ret += w * r
+                        period_returns_vec[f] = r
+
+            # Deduct costs on rebalance
+            if date in cost_series:
+                period_ret -= cost_series[date]
+
+            portfolio_returns[date] = period_ret
+
+            # Update weights for drift (match RollingBacktest behavior)
+            if period_returns_vec:
+                drifted = {f: current_weights.get(f, 0) * (1 + period_returns_vec.get(f, 0))
+                           for f in current_weights}
+                total = sum(drifted.values())
+                if abs(total) > 1e-10:
+                    current_weights = {f: w / total for f, w in drifted.items()}
+
+    # Convert to Series
+    ret_series = pd.Series(portfolio_returns)
+    ret_series.index = pd.PeriodIndex(ret_series.index, freq="M")
+
+    turnover_series = pd.Series(inner_turnover)
+    if not turnover_series.empty:
+        turnover_series.index = pd.PeriodIndex(turnover_series.index, freq="M")
+
+    cost_s = pd.Series(cost_series)
+    if not cost_s.empty:
+        cost_s.index = pd.PeriodIndex(cost_s.index, freq="M")
+
+    return {
+        "portfolio_returns": ret_series,
+        "factor_history": factor_history,
+        "weight_history": weight_history,
+        "turnover": turnover_series,
+        "transaction_costs": cost_s,
+        "outer_turnover": outer_turnover,
+    }
+
+
 def run_stage_5(config_path: str = None):
     config = load_config(config_path, project_root=str(PROJECT_ROOT))
     tables_path = config.tables_path()
@@ -552,6 +758,183 @@ def run_stage_5(config_path: str = None):
         print(bl_summary_df.round(4))
         _flush("  Saved bl_vs_nonbl_summary.csv")
 
+    # ══════════════════════════════════════════════════════════════════
+    # PART 2: Adaptive Factor Selection Backtest
+    # Re-selects factors annually from the full universe (20 factors),
+    # then rebalances weights quarterly on the current factor set.
+    # Compares with fixed-factor backtest to measure the cost of adaptation.
+    # ══════════════════════════════════════════════════════════════════
+    _flush("\n" + "=" * 60)
+    _flush("ADAPTIVE FACTOR SELECTION BACKTEST")
+    _flush("=" * 60)
+
+    # Load ALL factor QSpreads (full universe, not just selected)
+    all_qs_df = pd.read_csv(qspreads_csv, index_col=0)
+    all_qs_df.index = pd.PeriodIndex(all_qs_df.index, freq="M")
+    all_qs_df = all_qs_df.dropna(axis=1, how="all")
+    _flush(f"\n  Full factor universe: {all_qs_df.shape[1]} factors")
+    _flush(f"  Data range: {all_qs_df.index[0]} to {all_qs_df.index[-1]}")
+
+    adaptive_strategies = {
+        "Adaptive EW": (equal_weight_optimizer, {}),
+        "Adaptive IC-Wt": (ic_weighted_optimizer, {}),
+        "Adaptive MVO+BL": (mvo_bl_optimizer, {**bl_kwargs, "risk_aversion": config.optimization.risk_aversion}),
+    }
+
+    # Also run fixed-factor versions with the same optimizers for fair comparison
+    fixed_strategies = {
+        "Fixed EW": (equal_weight_optimizer, {}),
+        "Fixed IC-Wt": (ic_weighted_optimizer, {}),
+        "Fixed MVO+BL": (mvo_bl_optimizer, {**bl_kwargs, "risk_aversion": config.optimization.risk_aversion}),
+    }
+
+    adaptive_results = {}
+    fixed_results = {}
+
+    for aname, (opt_func, opt_kwargs) in adaptive_strategies.items():
+        _flush(f"\n  Running {aname} (annual re-selection)...")
+        res = run_adaptive_backtest(
+            all_qs_df, opt_func,
+            lookback_months=lookback,
+            reselection_freq=12,
+            rebalance_freq=rebalance_freq,
+            transaction_cost_bps=tc_bps,
+            n_factors=5, max_corr=0.6,
+            **opt_kwargs,
+        )
+        adaptive_results[aname] = res
+        ret_oos = res["portfolio_returns"].loc[res["portfolio_returns"].index >= oos_start_period]
+        _flush(f"    OOS months: {len(ret_oos)}, Net Sharpe: {_sharpe(ret_oos):.3f}")
+        _flush(f"    Avg turnover: {res['turnover'].mean():.3f}")
+        _flush(f"    Total costs: {res['transaction_costs'].sum()*100:.2f}%")
+
+        # Show factor changes
+        for date, changes in res.get("outer_turnover", {}).items():
+            if changes["n_changed"] > 0:
+                _flush(f"    {date}: +{changes['added']} -{changes['dropped']}")
+
+    for fname, (opt_func, opt_kwargs) in fixed_strategies.items():
+        _flush(f"\n  Running {fname} (fixed factors)...")
+        bt = RollingBacktest(
+            sel_qspreads, opt_func,
+            lookback_months=lookback,
+            rebalance_freq=rebalance_freq,
+            transaction_cost_bps=tc_bps,
+        )
+        res = bt.run(**opt_kwargs)
+        fixed_results[fname] = res
+        ret = res["portfolio_returns"]
+        ret_oos = ret.loc[ret.index >= oos_start_period]
+        _flush(f"    OOS months: {len(ret_oos)}, Net Sharpe: {_sharpe(ret_oos):.3f}")
+
+    # ── Adaptive vs Fixed comparison table ──
+    _flush("\n  Adaptive vs Fixed Factor Selection (OOS):")
+    adapt_rows = []
+
+    for aname, ares in adaptive_results.items():
+        aret = ares["portfolio_returns"]
+        aret_oos = aret.loc[aret.index >= oos_start_period]
+
+        # Matching fixed strategy
+        fname = aname.replace("Adaptive", "Fixed")
+        fres = fixed_results.get(fname, {})
+        fret = fres.get("portfolio_returns", pd.Series(dtype=float))
+        fret_oos = fret.loc[fret.index >= oos_start_period] if len(fret) > 0 else pd.Series(dtype=float)
+
+        # Count factor changes in OOS
+        oos_changes = sum(
+            1 for d, c in ares.get("outer_turnover", {}).items()
+            if pd.Period(d, freq="M") >= oos_start_period and c["n_changed"] > 0
+        )
+        total_factors_changed = sum(
+            c["n_changed"] for d, c in ares.get("outer_turnover", {}).items()
+            if pd.Period(d, freq="M") >= oos_start_period
+        )
+
+        # OOS-only costs for fair comparison
+        a_costs_oos = ares["transaction_costs"]
+        if not a_costs_oos.empty:
+            a_costs_oos = a_costs_oos.loc[a_costs_oos.index >= oos_start_period]
+        f_costs = fres.get("transaction_costs", pd.Series(dtype=float))
+        f_costs_oos = f_costs.loc[f_costs.index >= oos_start_period] if len(f_costs) > 0 else pd.Series(dtype=float)
+
+        adapt_rows.append({
+            "Strategy": aname,
+            "Adaptive Sharpe": _sharpe(aret_oos) if len(aret_oos) > 0 else np.nan,
+            "Fixed Sharpe": _sharpe(fret_oos) if len(fret_oos) > 0 else np.nan,
+            "Adaptive Costs (OOS bps)": a_costs_oos.sum() * 10000,
+            "Fixed Costs (OOS bps)": f_costs_oos.sum() * 10000 if len(f_costs_oos) > 0 else np.nan,
+            "Factor Changes (OOS)": oos_changes,
+            "Factors Changed (total)": total_factors_changed,
+            "Adaptive Max DD": max_drawdown(aret_oos) if len(aret_oos) > 0 else np.nan,
+            "Fixed Max DD": max_drawdown(fret_oos) if len(fret_oos) > 0 else np.nan,
+        })
+
+    adapt_df = pd.DataFrame(adapt_rows).set_index("Strategy")
+    print(adapt_df.round(4))
+    adapt_df.to_csv(tables_path / "adaptive_vs_fixed_comparison.csv")
+    _flush("  Saved adaptive_vs_fixed_comparison.csv")
+
+    # Show which factors were selected at each re-selection date
+    _flush("\n  Factor Selection History (Adaptive EW):")
+    ew_history = adaptive_results.get("Adaptive EW", {}).get("factor_history", {})
+    for date, factors in sorted(ew_history.items()):
+        period = pd.Period(date, freq="M") if not isinstance(date, pd.Period) else date
+        marker = " ← OOS" if period >= oos_start_period else ""
+        _flush(f"    {date}: {factors}{marker}")
+
+    # ── Adaptive vs Fixed plot ──
+    _flush("\n  Generating adaptive vs fixed comparison plot...")
+
+    fig_adapt = make_subplots(
+        rows=1, cols=len(adaptive_strategies),
+        subplot_titles=[name.replace("Adaptive ", "") for name in adaptive_strategies],
+        horizontal_spacing=0.06,
+    )
+
+    adapt_colors = {"EW": "#2563eb", "IC-Wt": "#0ea5e9", "MVO+BL": "#a855f7"}
+
+    for col, aname in enumerate(adaptive_strategies, 1):
+        fname = aname.replace("Adaptive", "Fixed")
+        short = aname.replace("Adaptive ", "")
+        color = adapt_colors.get(short, "#94a3b8")
+
+        for pname, res_dict, dash, lw in [
+            (fname, fixed_results, "solid", 2),
+            (aname, adaptive_results, "dash", 2.5),
+        ]:
+            if pname not in res_dict:
+                continue
+            ret = res_dict[pname].get("portfolio_returns", pd.Series(dtype=float)) if isinstance(res_dict[pname], dict) else res_dict[pname]["portfolio_returns"]
+            ret_oos = ret.loc[ret.index >= oos_start_period]
+            if len(ret_oos) == 0:
+                continue
+            cum = (1 + ret_oos).cumprod()
+            dates = ret_oos.index.to_timestamp()
+            fig_adapt.add_trace(go.Scatter(
+                x=dates, y=cum.values,
+                mode="lines", name=f"{pname} ({_sharpe(ret_oos):.2f})",
+                line=dict(color=color, width=lw, dash=dash),
+            ), row=1, col=col)
+
+        fig_adapt.update_yaxes(title_text="Cumulative Return" if col == 1 else "", row=1, col=col)
+
+    fig_adapt.update_layout(
+        template="plotly_white", font=dict(size=13),
+        height=450, width=500 * len(adaptive_strategies),
+        title_text="Fixed vs Adaptive Factor Selection (Annual Re-selection, Net of Costs, OOS)",
+        legend=dict(x=0.02, y=0.98),
+        hovermode="x unified",
+    )
+
+    fig_adapt.write_html(str(fig_path / "adaptive_vs_fixed.html"), include_plotlyjs="cdn")
+    try:
+        fig_adapt.write_image(str(fig_path / "adaptive_vs_fixed.png"),
+                              width=500 * len(adaptive_strategies), height=450, scale=2)
+    except Exception:
+        pass
+    _flush("  Saved adaptive_vs_fixed.html")
+
     _flush(f"\nStage 5 complete. Results saved to {tables_path} and {fig_path}")
 
     return {
@@ -559,6 +942,8 @@ def run_stage_5(config_path: str = None):
         "gross_returns": oos_returns_gross,
         "net_returns": oos_returns_net,
         "results": results_net,
+        "adaptive_results": adaptive_results,
+        "adaptive_comparison": adapt_df,
     }
 
 
